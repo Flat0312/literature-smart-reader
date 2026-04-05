@@ -1,0 +1,1257 @@
+"""Metadata extraction for title, authors and keywords."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import re
+from collections import Counter
+from typing import Any
+
+from config.settings import MAX_KEYWORDS, TITLE_MAX_LINES, TITLE_SCAN_TOP_RATIO
+from services.llm_service import fallback_authors_with_llm
+from services.pdf_service import flatten_first_page_lines
+from utils.text_utils import (
+    compact_list,
+    extract_chinese_phrases,
+    extract_english_tokens,
+    normalize_line,
+    normalize_whitespace,
+    sanitize_metadata_fragments,
+)
+
+TITLE_METADATA_NOISE = (
+    "网络首发",
+    "出版确认",
+    "编辑部",
+    "中国学术期刊",
+    "排版定稿",
+    "录用定稿",
+    "光盘版",
+    "杂志社",
+)
+
+
+@dataclass(slots=True)
+class TitleExtractionResult:
+    title: str
+    source_page_index: int | None = None
+    source_kind: str = ""
+    debug_info: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class KeywordExtractionResult:
+    keywords: list[str]
+    source_language: str = ""
+    source_kind: str = ""
+    raw_block: str = ""
+    confidence: str = ""
+    warnings: list[str] = field(default_factory=list)
+    debug_info: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class KeywordCandidate:
+    keywords: list[str]
+    source_language: str
+    source_kind: str
+    raw_block: str
+    score: float
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AuthorExtractionResult:
+    authors: list[str]
+    source_kind: str = ""
+    confidence: str = ""
+    raw_candidates: list[str] = field(default_factory=list)
+    cleaned_authors: list[str] = field(default_factory=list)
+    debug_info: dict[str, object] = field(default_factory=dict)
+
+
+KEYWORD_POLLUTION_TERMS = (
+    "摘要",
+    "abstract",
+    "作者",
+    "引言",
+    "基金",
+    "项目",
+    "issn",
+    "网络首发",
+    "doi",
+)
+
+KEYWORD_SENTENCE_HINTS = (
+    "本文",
+    "本研究",
+    "通过",
+    "采用",
+    "提出",
+    "表明",
+    "研究",
+    "分析",
+    "结果",
+)
+
+KEYWORD_STRATEGY_BONUS = {
+    "strategy_a": 3.0,
+    "strategy_b": 2.2,
+    "strategy_c": 1.4,
+    "fallback": 0.5,
+}
+
+AUTHOR_STOP_PATTERN = re.compile(
+    r"^(?:〔\s*(?:摘\s*要|摘要|关键词|关键字|引用本文格式|引用格式)\s*〕|\[\s*(?:摘\s*要|摘要|关键词|关键字|引用本文格式|引用格式)\s*\]|摘\s*要|摘要|关键词|关键字|引用本文格式|引用格式|abstract|keywords?|引言|绪论|参考文献|作者简介)\b",
+    re.IGNORECASE,
+)
+AUTHOR_MARKER_PATTERN = re.compile(r"^(?:作者|author(?:s)?|by)\s*[:：]?\s*(.*)$", re.IGNORECASE)
+AUTHOR_INSTITUTION_PATTERN = re.compile(
+    r"(大学|学院|学校|研究院|研究所|实验室|中心|department|university|college|school|institute|faculty|laboratory|email|e-mail|邮编|地址|单位|基金)",
+    re.IGNORECASE,
+)
+AUTHOR_NOISE_PATTERN = re.compile(
+    r"(摘要|关键词|关键字|abstract|keywords?|引言|绪论|参考文献|作者简介|中图法分类号|引用本文格式|引用格式)",
+    re.IGNORECASE,
+)
+AUTHOR_EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+AUTHOR_POSTCODE_PATTERN = re.compile(r"\b\d{6}\b")
+
+
+def extract_title(
+    raw_text: str,
+    first_page_blocks: list[dict],
+    page_snapshots: list[Any] | None = None,
+    body_start_page_index: int | None = None,
+) -> str:
+    return extract_title_with_source(
+        raw_text,
+        first_page_blocks,
+        page_snapshots=page_snapshots,
+        body_start_page_index=body_start_page_index,
+    ).title
+
+
+def extract_authors_with_source(
+    raw_text: str,
+    *,
+    title: str = "",
+    priority_text: str = "",
+) -> AuthorExtractionResult:
+    front_text = _build_author_front_text(priority_text or raw_text)
+    debug_info: dict[str, object] = {
+        "title_hint": title,
+        "front_text_preview": front_text[:400],
+        "front_text_length": len(front_text),
+    }
+    raw_candidates: list[str] = []
+
+    title_zone_candidates = _extract_author_candidates_from_title_zone(front_text, title)
+    raw_candidates.extend(title_zone_candidates)
+    cleaned_from_title_zone = _clean_author_candidates(title_zone_candidates)
+    if cleaned_from_title_zone:
+        confidence = "high" if _authors_look_stable(cleaned_from_title_zone) else "medium"
+        return AuthorExtractionResult(
+            authors=cleaned_from_title_zone,
+            source_kind="rule_title_zone",
+            confidence=confidence,
+            raw_candidates=compact_list(title_zone_candidates, 8),
+            cleaned_authors=cleaned_from_title_zone,
+            debug_info={
+                **debug_info,
+                "candidate_buckets": {
+                    "rule_title_zone": title_zone_candidates,
+                    "rule_marker": [],
+                },
+            },
+        )
+
+    marker_candidates = _extract_author_candidates_from_markers(front_text)
+    raw_candidates.extend(marker_candidates)
+    cleaned_from_markers = _clean_author_candidates(marker_candidates)
+    if cleaned_from_markers:
+        return AuthorExtractionResult(
+            authors=cleaned_from_markers,
+            source_kind="rule_marker",
+            confidence="medium",
+            raw_candidates=compact_list(raw_candidates, 10),
+            cleaned_authors=cleaned_from_markers,
+            debug_info={
+                **debug_info,
+                "candidate_buckets": {
+                    "rule_title_zone": title_zone_candidates,
+                    "rule_marker": marker_candidates,
+                },
+            },
+        )
+
+    llm_result = fallback_authors_with_llm(
+        title=title,
+        front_text=front_text,
+        raw_candidates=compact_list(raw_candidates, 10),
+    )
+    llm_authors = _clean_author_candidates(llm_result.authors)
+    if llm_authors:
+        return AuthorExtractionResult(
+            authors=llm_authors,
+            source_kind="llm_fallback",
+            confidence="low",
+            raw_candidates=compact_list([*raw_candidates, *(llm_result.authors or [])], 10),
+            cleaned_authors=llm_authors,
+            debug_info={
+                **debug_info,
+                "candidate_buckets": {
+                    "rule_title_zone": title_zone_candidates,
+                    "rule_marker": marker_candidates,
+                    "llm": llm_result.authors,
+                },
+                "llm_fallback": llm_result.debug_info,
+            },
+        )
+
+    return AuthorExtractionResult(
+        authors=[],
+        source_kind="none",
+        confidence="none",
+        raw_candidates=compact_list(raw_candidates, 10),
+        cleaned_authors=[],
+        debug_info={
+            **debug_info,
+            "candidate_buckets": {
+                "rule_title_zone": title_zone_candidates,
+                "rule_marker": marker_candidates,
+            },
+            "llm_fallback": llm_result.debug_info,
+        },
+    )
+
+
+def extract_title_with_source(
+    raw_text: str,
+    first_page_blocks: list[dict],
+    page_snapshots: list[Any] | None = None,
+    body_start_page_index: int | None = None,
+) -> TitleExtractionResult:
+    candidate_pages = _build_title_search_pages(page_snapshots, body_start_page_index)
+    page_candidates: list[dict[str, object]] = []
+
+    for page_index, page_text, page_blocks in candidate_pages:
+        title, source_kind = _extract_title_from_page(page_text, page_blocks)
+        if not title:
+            continue
+        page_candidates.append(
+            {
+                "title": title,
+                "page_index": page_index,
+                "source_kind": source_kind,
+            }
+        )
+
+    if page_candidates:
+        best_candidate = page_candidates[0]
+        return TitleExtractionResult(
+            title=str(best_candidate["title"]),
+            source_page_index=best_candidate["page_index"],
+            source_kind=str(best_candidate["source_kind"]),
+            debug_info={"candidates": page_candidates},
+        )
+
+    title = _extract_title_from_layout(first_page_blocks)
+    if title and not _is_cover_like_title(title):
+        return TitleExtractionResult(
+            title=title,
+            source_page_index=0 if first_page_blocks else None,
+            source_kind="first_page_layout",
+            debug_info={"candidates": [{"title": title, "page_index": 0, "source_kind": "first_page_layout"}]},
+        )
+
+    title = _extract_title_from_text(raw_text)
+    if _is_cover_like_title(title):
+        title = "未识别标题"
+    return TitleExtractionResult(
+        title=title,
+        source_page_index=None,
+        source_kind="text_fallback",
+        debug_info={"candidates": [{"title": title, "page_index": None, "source_kind": "text_fallback"}]},
+    )
+
+
+def extract_keywords(raw_text: str, title: str = "") -> list[str]:
+    return extract_keywords_with_source(raw_text, title=title).keywords
+
+
+def extract_keywords_with_source(
+    raw_text: str,
+    *,
+    title: str = "",
+    priority_text: str = "",
+    chinese_keyword_block: str = "",
+    english_keyword_block: str = "",
+) -> KeywordExtractionResult:
+    candidate_texts = [text for text in (priority_text, raw_text[:8000]) if text.strip()]
+    zh_candidates = _collect_keyword_candidates(
+        candidate_texts,
+        language="zh",
+        explicit_block=chinese_keyword_block,
+    )
+    en_candidates = _collect_keyword_candidates(
+        candidate_texts,
+        language="en",
+        explicit_block=english_keyword_block,
+    )
+    fallback_candidate = _build_frequency_fallback_candidate(raw_text, title)
+
+    selected_candidate = _select_best_keyword_candidate(zh_candidates, en_candidates, fallback_candidate)
+    if selected_candidate is None:
+        return KeywordExtractionResult(
+            keywords=[],
+            source_language="",
+            source_kind="",
+            raw_block="",
+            confidence="低",
+            warnings=["关键词提取失败，建议结合原文核对。"],
+            debug_info={
+                "has_chinese_keywords": False,
+                "has_english_keywords": False,
+                "candidate_count_zh": len(zh_candidates),
+                "candidate_count_en": len(en_candidates),
+                "selected_strategy": "",
+                "selected_score": 0.0,
+                "all_candidates": [],
+            },
+        )
+
+    selected_keywords = compact_list(selected_candidate.keywords, MAX_KEYWORDS)
+    selected_confidence = _candidate_confidence(selected_candidate)
+    return KeywordExtractionResult(
+        keywords=selected_keywords,
+        source_language=selected_candidate.source_language,
+        source_kind=selected_candidate.source_kind,
+        raw_block=selected_candidate.raw_block,
+        confidence=selected_confidence,
+        warnings=selected_candidate.warnings,
+        debug_info={
+            "has_chinese_keywords": any(candidate.keywords for candidate in zh_candidates),
+            "has_english_keywords": any(candidate.keywords for candidate in en_candidates),
+            "candidate_count_zh": len(zh_candidates),
+            "candidate_count_en": len(en_candidates),
+            "selected_strategy": selected_candidate.source_kind,
+            "selected_score": round(selected_candidate.score, 2),
+            "selected_confidence": selected_confidence,
+            "low_confidence": selected_confidence == "低",
+            "target_keyword_range": "3-8",
+            "raw_block_preview": selected_candidate.raw_block[:240],
+            "all_candidates": [
+                {
+                    "source_kind": candidate.source_kind,
+                    "source_language": candidate.source_language,
+                    "score": round(candidate.score, 2),
+                    "confidence": _candidate_confidence(candidate),
+                    "keywords": candidate.keywords,
+                    "warnings": candidate.warnings,
+                    "raw_block_preview": candidate.raw_block[:120],
+                }
+                for candidate in sorted(
+                    [*zh_candidates, *en_candidates, *([fallback_candidate] if fallback_candidate else [])],
+                    key=lambda item: item.score,
+                    reverse=True,
+                )
+            ],
+        },
+    )
+
+
+def _extract_title_from_layout(first_page_blocks: list[dict]) -> str:
+    lines = flatten_first_page_lines(first_page_blocks)
+    if not lines:
+        return ""
+
+    top_candidates = lines[:12]
+    highest_font = max((line["font_size"] for line in top_candidates), default=0.0)
+    if highest_font <= 0:
+        return ""
+
+    filtered = [
+        line for line in top_candidates
+        if line["font_size"] >= highest_font * 0.9
+        and line["y0"] <= max(line["y0"] for line in top_candidates) * TITLE_SCAN_TOP_RATIO * 3
+        and len(line["text"]) >= 6
+        and _is_valid_title_line(line["text"])
+    ]
+
+    if not filtered:
+        filtered = [
+            line for line in top_candidates
+            if line["font_size"] >= highest_font * 0.85 and _is_valid_title_line(line["text"])
+        ]
+
+    title_lines = [line["text"] for line in filtered[:TITLE_MAX_LINES]]
+    title = normalize_line(" ".join(title_lines))
+    return title if _is_valid_title_candidate(title) else ""
+
+
+def _build_author_front_text(text: str) -> str:
+    lines = [normalize_line(line) for line in text.splitlines() if normalize_line(line)]
+    if not lines:
+        return ""
+    selected_lines: list[str] = []
+    total_chars = 0
+    for line in lines[:40]:
+        selected_lines.append(line)
+        total_chars += len(line)
+        if total_chars >= 1800:
+            break
+    return "\n".join(selected_lines)
+
+
+def _extract_author_candidates_from_title_zone(text: str, title: str) -> list[str]:
+    lines = [normalize_line(line) for line in text.splitlines() if normalize_line(line)]
+    if not lines:
+        return []
+
+    title_indexes = _find_title_zone_indexes(lines, title)
+    if not title_indexes:
+        return []
+    start_index = min(max(title_indexes[-1] + 1, 0), len(lines))
+
+    candidates: list[str] = []
+    for line in lines[start_index: start_index + 5]:
+        if AUTHOR_STOP_PATTERN.search(line):
+            break
+        if AUTHOR_INSTITUTION_PATTERN.search(line) and not _contains_authorish_text(line):
+            if candidates:
+                break
+            continue
+        if _is_plausible_author_candidate(line):
+            candidates.append(line)
+            continue
+        if candidates:
+            break
+    return compact_list(candidates, 6)
+
+
+def _extract_author_candidates_from_markers(text: str) -> list[str]:
+    lines = [normalize_line(line) for line in text.splitlines() if normalize_line(line)]
+    candidates: list[str] = []
+    for index, line in enumerate(lines[:24]):
+        match = AUTHOR_MARKER_PATTERN.match(line)
+        if not match:
+            continue
+        inline_value = normalize_line(match.group(1))
+        if inline_value:
+            candidates.append(inline_value)
+            continue
+        if index + 1 < len(lines):
+            next_line = lines[index + 1]
+            if not AUTHOR_STOP_PATTERN.search(next_line):
+                candidates.append(next_line)
+    return compact_list(candidates, 6)
+
+
+def _find_title_zone_indexes(lines: list[str], title: str) -> list[int]:
+    normalized_title = normalize_line(title)
+    if not normalized_title:
+        return []
+    matched_indexes: list[int] = []
+    for index, line in enumerate(lines[:12]):
+        if line == normalized_title or normalized_title in line or line in normalized_title:
+            matched_indexes.append(index)
+    if matched_indexes:
+        return matched_indexes
+
+    title_compact = re.sub(r"\s+", "", normalized_title)
+    if not title_compact:
+        return []
+    for index, line in enumerate(lines[:12]):
+        compact_line = re.sub(r"\s+", "", line)
+        if compact_line and (compact_line in title_compact or title_compact in compact_line):
+            matched_indexes.append(index)
+    return matched_indexes
+
+
+def _clean_author_candidates(candidates: list[str]) -> list[str]:
+    cleaned_authors: list[str] = []
+    for candidate in candidates:
+        cleaned_authors.extend(_split_author_candidate(candidate))
+    compacted = compact_list(cleaned_authors, 6)
+    return [author for author in compacted if _looks_like_author_name(author)]
+
+
+def _split_author_candidate(candidate: str) -> list[str]:
+    text = normalize_line(candidate)
+    if not text:
+        return []
+
+    text = AUTHOR_MARKER_PATTERN.sub(lambda match: normalize_line(match.group(1)), text)
+    text = AUTHOR_EMAIL_PATTERN.sub(" ", text)
+    text = AUTHOR_POSTCODE_PATTERN.sub(" ", text)
+    text = re.sub(r"[①②③④⑤⑥⑦⑧⑨⑩]", " ", text)
+    text = re.sub(r"[*＊†‡#]+", " ", text)
+    text = re.sub(r"(?<=[\u4e00-\u9fffA-Za-z])\d+(?=[\u4e00-\u9fffA-Za-z])", "", text)
+    text = re.sub(r"(?<=[\u4e00-\u9fffA-Za-z])\d+$", "", text)
+    text = re.sub(r"\([^)]*(?:大学|学院|研究院|研究所|department|university|college|school|institute)[^)]*\)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"（[^）]*(?:大学|学院|研究院|研究所|department|university|college|school|institute)[^）]*）", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"(?:作者单位|通信作者|作者简介|基金项目|项目编号|中图法分类号|引用本文格式).*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(?:\d+\s*[.、]\s*)?(?:[A-Za-z]*\s*)?(?:大学|学院|学校|研究院|研究所|实验室|中心|department|university|college|school|institute|faculty|laboratory).*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = normalize_line(text).strip("，,、;；:：/| ")
+    if not text or AUTHOR_NOISE_PATTERN.search(text):
+        return []
+
+    delimiter_normalized = re.sub(r"(?:\s+(?:and|与|和)\s+)", "、", text, flags=re.IGNORECASE)
+    delimiter_normalized = re.sub(r"[,，;；/|]+", "、", delimiter_normalized)
+    delimiter_normalized = re.sub(r"\s{2,}", "、", delimiter_normalized)
+
+    raw_parts = [normalize_line(part) for part in delimiter_normalized.split("、") if normalize_line(part)]
+    if len(raw_parts) == 1 and " " in delimiter_normalized:
+        spaced_parts = [normalize_line(part) for part in re.split(r"\s+", delimiter_normalized) if normalize_line(part)]
+        if len(spaced_parts) >= 2 and all(_looks_like_author_name(part) for part in spaced_parts):
+            raw_parts = spaced_parts
+
+    cleaned_parts: list[str] = []
+    for part in raw_parts:
+        compact_part = re.sub(r"\s+", " ", part).strip()
+        compact_part = re.sub(r"^\d+\s*[.、]?\s*", "", compact_part)
+        compact_part = re.sub(r"\d+$", "", compact_part).strip("*＊†‡# ")
+        compact_no_space = re.sub(r"\s+", "", compact_part)
+        if re.fullmatch(r"[\u4e00-\u9fff]{4,8}", compact_no_space):
+            split_names = _split_compact_chinese_author_names(compact_no_space)
+            if split_names:
+                cleaned_parts.extend(split_names)
+                continue
+        if _looks_like_author_name(compact_part):
+            cleaned_parts.append(compact_part)
+    return compact_list(cleaned_parts, 6)
+
+
+def _is_plausible_author_candidate(text: str) -> bool:
+    if not text or len(text) > 80:
+        return False
+    if AUTHOR_MARKER_PATTERN.match(text):
+        return False
+    if AUTHOR_STOP_PATTERN.search(text) or AUTHOR_NOISE_PATTERN.search(text):
+        return False
+    if AUTHOR_INSTITUTION_PATTERN.search(text):
+        if re.match(r"^\d+\s*[.、]", text):
+            return False
+        if not re.search(r"[,，、]|\d", text):
+            return False
+        if not _contains_authorish_text(text):
+            return False
+    return _contains_authorish_text(text)
+
+
+def _contains_authorish_text(text: str) -> bool:
+    if re.search(r"[\u4e00-\u9fff]{2,4}(?:[、，,\s]+[\u4e00-\u9fff]{2,4}){0,4}", text):
+        return True
+    if re.search(r"[A-Za-z][A-Za-z.\-']+\s+[A-Za-z][A-Za-z.\-']+", text):
+        return True
+    return False
+
+
+def _looks_like_author_name(text: str) -> bool:
+    normalized = normalize_line(text).strip("，,、;；:： ")
+    if not normalized or len(normalized) > 32:
+        return False
+    if AUTHOR_NOISE_PATTERN.search(normalized):
+        return False
+    if AUTHOR_INSTITUTION_PATTERN.search(normalized):
+        return False
+    if re.search(r"[。！？!?；;:：@]", normalized):
+        return False
+    if re.fullmatch(r"[\u4e00-\u9fff·]{2,8}", normalized):
+        return True
+    if re.fullmatch(r"[A-Za-z][A-Za-z.\-'\s]{1,30}", normalized):
+        token_count = len([token for token in normalized.split() if token])
+        letter_count = len(re.findall(r"[A-Za-z]", normalized))
+        return token_count >= 2 and letter_count >= 4
+    return False
+
+
+def _split_compact_chinese_author_names(text: str) -> list[str]:
+    if len(text) == 4:
+        return [text[:2], text[2:]]
+    if len(text) == 5:
+        return [text[:2], text[2:]]
+    if len(text) == 6:
+        return [text[:3], text[3:]]
+    if len(text) == 7:
+        return [text[:3], text[3:]]
+    if len(text) == 8:
+        return [text[:4], text[4:]]
+    return []
+
+
+def _authors_look_stable(authors: list[str]) -> bool:
+    if not authors or len(authors) > 6:
+        return False
+    return all(_looks_like_author_name(author) for author in authors)
+
+
+def _extract_title_from_page(page_text: str, page_blocks: list[dict]) -> tuple[str, str]:
+    title = _extract_title_from_layout(page_blocks)
+    if title:
+        return title, "page_layout"
+
+    lines = [normalize_line(line) for line in page_text.splitlines()]
+    title = _extract_title_from_line_window(lines)
+    if _is_valid_title_candidate(title):
+        return title, "page_text"
+    return "", ""
+
+
+def _extract_title_from_text(raw_text: str) -> str:
+    lines = [normalize_line(line) for line in raw_text.splitlines()]
+    title = _extract_title_from_line_window(lines[:12])
+    return title if _is_valid_title_candidate(title) else "未识别标题"
+
+
+def _extract_title_from_line_window(lines: list[str]) -> str:
+    candidates: list[str] = []
+    for line in lines[:12]:
+        if not line:
+            continue
+        if re.search(r"^(摘要|abstract|关键词|关键字|keywords?|引言|introduction)\s*[:：]?", line, re.IGNORECASE):
+            break
+        if not _is_valid_title_line(line):
+            continue
+        candidates.append(line)
+        if len(candidates) >= TITLE_MAX_LINES:
+            break
+
+    title = normalize_line(" ".join(candidates))
+    return title if _is_valid_title_candidate(title) else ""
+
+
+def _build_title_search_pages(
+    page_snapshots: list[Any] | None,
+    body_start_page_index: int | None,
+) -> list[tuple[int, str, list[dict]]]:
+    if not page_snapshots:
+        return []
+
+    candidate_indices: list[int] = []
+    if body_start_page_index is None:
+        candidate_indices.extend(range(min(3, len(page_snapshots))))
+    else:
+        start = max(body_start_page_index, 0)
+        candidate_indices.extend(index for index in range(start, min(start + 3, len(page_snapshots))))
+        if start > 0:
+            candidate_indices.append(start - 1)
+    candidate_indices.extend(range(min(2, len(page_snapshots))))
+
+    deduped_indices: list[int] = []
+    for page_index in candidate_indices:
+        if page_index in deduped_indices:
+            continue
+        deduped_indices.append(page_index)
+
+    pages: list[tuple[int, str, list[dict]]] = []
+    for page_index in deduped_indices:
+        snapshot = page_snapshots[page_index]
+        page_text = getattr(snapshot, "text", "")
+        page_blocks = getattr(snapshot, "blocks", [])
+        pages.append((page_index, page_text, page_blocks))
+    return pages
+
+
+def _is_cover_like_title(text: str) -> bool:
+    normalized = normalize_line(text)
+    if not normalized:
+        return True
+    if re.search(r"^《[^》]{2,40}》\s*网络首发论文$", normalized):
+        return True
+    if re.search(r"(学报|期刊|杂志|journal|review).*\d{4}.*第?\d+期", normalized, re.IGNORECASE):
+        return True
+    if re.search(r"(网络首发论文|出版确认|编辑部|中国学术期刊|排版定稿|录用定稿|光盘版|杂志社)", normalized, re.IGNORECASE):
+        return True
+    if re.fullmatch(r"《[^》]{2,20}》", normalized):
+        return True
+    if "期刊" in normalized and len(normalized) <= 20:
+        return True
+    if re.search(r"(作者|author|学院|college|university|email)", normalized, re.IGNORECASE):
+        return True
+    return False
+
+
+def _is_valid_title_line(text: str) -> bool:
+    normalized = normalize_line(text)
+    if not normalized:
+        return False
+    if len(normalized) < 6 or len(normalized) > 120:
+        return False
+    if re.search(r"^(摘要|abstract|关键词|关键字|keywords?|引言|introduction|作者|author)\s*[:：]?", normalized, re.IGNORECASE):
+        return False
+    if re.search(r"(基金项目|收稿日期|修回日期|录用日期|通信作者|doi|issn)", normalized, re.IGNORECASE):
+        return False
+    if re.search(r"(学报|期刊|杂志|journal|review).*\d{4}.*第?\d+期", normalized, re.IGNORECASE):
+        return False
+    if re.fullmatch(r"[\d\s\-—–:：./()]+", normalized):
+        return False
+    return not _is_cover_like_title(normalized)
+
+
+def _is_valid_title_candidate(text: str) -> bool:
+    normalized = normalize_line(text)
+    if not normalized or normalized == "未识别标题":
+        return False
+    if not _is_valid_title_line(normalized):
+        return False
+    if re.search(r"(作者|author|学院|college|university|email)", normalized, re.IGNORECASE):
+        return False
+    return True
+
+
+def _collect_keyword_candidates(
+    candidate_texts: list[str],
+    *,
+    language: str,
+    explicit_block: str = "",
+) -> list[KeywordCandidate]:
+    raw_blocks: list[tuple[str, str]] = []
+    explicit_text = normalize_whitespace(explicit_block) if explicit_block else ""
+    if explicit_text:
+        raw_blocks.append((f"strategy_a_explicit_{language}", explicit_text))
+
+    raw_blocks.extend(_extract_strategy_a_blocks(candidate_texts, language=language))
+    raw_blocks.extend(_extract_strategy_b_blocks(candidate_texts, language=language))
+    raw_blocks.extend(_extract_strategy_c_blocks(candidate_texts, language=language))
+
+    candidates: list[KeywordCandidate] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for source_kind, raw_block in raw_blocks:
+        keywords = _split_keywords_block(raw_block, language=language)
+        if not keywords:
+            continue
+        candidate = _build_keyword_candidate(
+            keywords,
+            raw_block=raw_block,
+            source_kind=source_kind,
+            source_language=language,
+        )
+        candidate_key = (candidate.source_kind, tuple(candidate.keywords))
+        if candidate_key in seen:
+            continue
+        seen.add(candidate_key)
+        candidates.append(candidate)
+    return candidates
+
+
+def _extract_strategy_a_blocks(candidate_texts: list[str], *, language: str) -> list[tuple[str, str]]:
+    patterns = _ZH_KEYWORD_PATTERNS if language == "zh" else _EN_KEYWORD_PATTERNS
+    blocks: list[tuple[str, str]] = []
+    for text in candidate_texts:
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE | re.DOTALL):
+                raw_block = _trim_keyword_block(match.group(1), language=language)
+                if raw_block:
+                    blocks.append((f"strategy_a_block_{language}", raw_block))
+    return blocks
+
+
+def _extract_strategy_b_blocks(candidate_texts: list[str], *, language: str) -> list[tuple[str, str]]:
+    label_pattern = _keyword_label_pattern(language)
+    blocks: list[tuple[str, str]] = []
+    for text in candidate_texts:
+        lines = [normalize_whitespace(line) for line in text.splitlines() if normalize_whitespace(line)]
+        for index, line in enumerate(lines):
+            if not re.search(label_pattern, line, re.IGNORECASE):
+                continue
+            extracted = re.sub(
+                rf"^.*?{label_pattern}\s*[：:]?\s*",
+                "",
+                line,
+                count=1,
+                flags=re.IGNORECASE,
+            ).strip()
+            extracted = _trim_keyword_block(extracted, language=language)
+            if extracted:
+                blocks.append((f"strategy_b_line_{language}", extracted))
+                continue
+            next_lines = []
+            for offset in range(1, 3):
+                next_index = index + offset
+                if next_index >= len(lines):
+                    break
+                next_line = lines[next_index]
+                if _looks_like_keyword_stop_line(next_line, language=language) or _looks_like_section_heading(next_line):
+                    break
+                next_lines.append(next_line)
+            merged = _trim_keyword_block("\n".join(next_lines), language=language)
+            if merged:
+                blocks.append((f"strategy_b_line_follow_{language}", merged))
+    return blocks
+
+
+def _extract_strategy_c_blocks(candidate_texts: list[str], *, language: str) -> list[tuple[str, str]]:
+    blocks: list[tuple[str, str]] = []
+    abstract_pattern = r"(?:摘\s*要|摘要|abstract)"
+    keyword_label_pattern = _keyword_label_pattern(language)
+    for text in candidate_texts:
+        lines = [normalize_whitespace(line) for line in text.splitlines() if normalize_whitespace(line)]
+        abstract_index = next(
+            (index for index, line in enumerate(lines) if re.search(abstract_pattern, line, re.IGNORECASE)),
+            None,
+        )
+        if abstract_index is None:
+            continue
+        for line_index in range(abstract_index, min(len(lines), abstract_index + 8)):
+            line = lines[line_index]
+            if not re.search(keyword_label_pattern, line, re.IGNORECASE):
+                continue
+            candidate = re.sub(
+                rf"^.*?{keyword_label_pattern}\s*[：:]?\s*",
+                "",
+                line,
+                count=1,
+                flags=re.IGNORECASE,
+            ).strip()
+            candidate = _trim_keyword_block(candidate, language=language)
+            if candidate:
+                blocks.append((f"strategy_c_abstract_nearby_{language}", candidate))
+                continue
+            if re.fullmatch(rf"{keyword_label_pattern}\s*[：:]?", normalize_whitespace(line), re.IGNORECASE):
+                following_lines: list[str] = []
+                for next_line in lines[line_index + 1: line_index + 3]:
+                    if _looks_like_keyword_stop_line(next_line, language=language) or _looks_like_section_heading(next_line):
+                        break
+                    following_lines.append(next_line)
+                merged = _trim_keyword_block("\n".join(following_lines), language=language)
+                if merged:
+                    blocks.append((f"strategy_c_abstract_nearby_{language}", merged))
+    return blocks
+
+
+def _build_keyword_candidate(
+    keywords: list[str],
+    *,
+    raw_block: str,
+    source_kind: str,
+    source_language: str,
+) -> KeywordCandidate:
+    score = 0.0
+    warnings: list[str] = []
+    count = len(keywords)
+
+    if source_kind.startswith("strategy_a"):
+        score += 4.0
+    elif source_kind.startswith("strategy_b"):
+        score += 3.0
+    elif source_kind.startswith("strategy_c"):
+        score += 2.0
+    else:
+        score += 1.0
+
+    if 2 <= count <= 8:
+        score += 4.0
+    elif count == 1:
+        score -= 3.0
+        warnings.append("关键词数量过少。")
+    elif count > 8:
+        score -= 1.8
+        warnings.append("关键词数量过多。")
+    else:
+        score -= 2.5
+
+    long_keywords = [item for item in keywords if len(item) > 14]
+    if long_keywords:
+        score -= 1.2 * len(long_keywords)
+        warnings.append("存在长度异常的关键词。")
+
+    polluted_keywords = [item for item in keywords if _contains_keyword_pollution(item)]
+    if polluted_keywords:
+        score -= 2.2 * len(polluted_keywords)
+        warnings.append("检测到污染关键词片段。")
+
+    if _looks_like_statement(raw_block):
+        score -= 3.2
+        warnings.append("候选结果更像陈述句。")
+
+    if _looks_like_fragmented_keyword_list(keywords):
+        score -= 3.4
+        warnings.append("检测到疑似切分碎片关键词。")
+
+    if count == 1 and len(keywords[0]) > 18:
+        score -= 2.5
+        warnings.append("仅提取到一个超长关键词。")
+
+    if source_language == "zh" and any(re.search(r"[\u4e00-\u9fff]", item) for item in keywords):
+        score += 0.6
+
+    return KeywordCandidate(
+        keywords=keywords,
+        source_language=source_language,
+        source_kind=source_kind,
+        raw_block=raw_block,
+        score=score,
+        warnings=_dedupe_keyword_warnings(warnings),
+    )
+
+
+def _build_frequency_fallback_candidate(raw_text: str, title: str) -> KeywordCandidate | None:
+    fallback_keywords = compact_list(_extract_frequency_keywords(raw_text, title), MAX_KEYWORDS)
+    if not fallback_keywords:
+        return None
+    candidate = _build_keyword_candidate(
+        fallback_keywords,
+        raw_block="",
+        source_kind="frequency_fallback",
+        source_language="fallback",
+    )
+    candidate.warnings = _dedupe_keyword_warnings([*candidate.warnings, "未定位到显式关键词区，已回退到频次关键词。"])
+    return candidate
+
+
+def _select_best_keyword_candidate(
+    zh_candidates: list[KeywordCandidate],
+    en_candidates: list[KeywordCandidate],
+    fallback_candidate: KeywordCandidate | None,
+) -> KeywordCandidate | None:
+    selected = _pick_best_candidate(zh_candidates)
+    if selected is None:
+        selected = _pick_best_candidate(en_candidates)
+    if selected is None:
+        return fallback_candidate
+
+    if fallback_candidate is not None and _is_abnormal_keyword_candidate(selected):
+        if fallback_candidate.score > selected.score:
+            warnings = [*selected.warnings, *fallback_candidate.warnings, "关键词提取置信度较低，已使用回退结果。"]
+            fallback_candidate.warnings = _dedupe_keyword_warnings(warnings)
+            return fallback_candidate
+
+    if _is_abnormal_keyword_candidate(selected):
+        selected.warnings = _dedupe_keyword_warnings([*selected.warnings, "关键词提取置信度较低。", "检测到版面干扰，建议结合原文核对。"])
+    return selected
+
+
+def _pick_best_candidate(candidates: list[KeywordCandidate]) -> KeywordCandidate | None:
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item.score)
+
+
+def _is_abnormal_keyword_candidate(candidate: KeywordCandidate) -> bool:
+    if not candidate.keywords:
+        return True
+    if len(candidate.keywords) == 1 and len(candidate.keywords[0]) > 14:
+        return True
+    if _looks_like_fragmented_keyword_list(candidate.keywords):
+        return True
+    if any(_contains_keyword_pollution(keyword) for keyword in candidate.keywords):
+        return True
+    if _looks_like_statement(candidate.raw_block or " ".join(candidate.keywords)):
+        return True
+    return candidate.score < 4.5
+
+
+def _score_to_confidence(score: float) -> str:
+    if score >= 8.0:
+        return "高"
+    if score >= 5.0:
+        return "中"
+    return "低"
+
+
+def _candidate_confidence(candidate: KeywordCandidate) -> str:
+    if _is_abnormal_keyword_candidate(candidate):
+        return "低"
+    return _score_to_confidence(candidate.score)
+
+
+def _contains_keyword_pollution(text: str) -> bool:
+    return bool(re.search(r"(摘要|Abstract|作者|引言|基金|项目|ISSN|网络首发|中图法分类号|引用本文格式)", text, re.IGNORECASE))
+
+
+def _looks_like_statement(text: str) -> bool:
+    normalized = normalize_whitespace(text)
+    if not normalized:
+        return False
+    if re.search(r"[。！？!?]", normalized):
+        return True
+    if len(re.findall(r"[；;,、]", normalized)) >= 2:
+        return False
+    if len(normalized) > 42 and re.search(r"(研究|提出|分析|表明|发现|采用|构建)", normalized):
+        return True
+    return False
+
+
+def _looks_like_fragmented_keyword_list(keywords: list[str]) -> bool:
+    if len(keywords) < 3:
+        return False
+
+    short_zh_keywords = [
+        keyword for keyword in keywords
+        if re.fullmatch(r"[\u4e00-\u9fff]{2,3}", keyword)
+    ]
+    if len(short_zh_keywords) < 3:
+        return False
+
+    overlap_pairs = 0
+    comparable_pairs = 0
+    for previous, current in zip(keywords, keywords[1:]):
+        if not (
+            re.fullmatch(r"[\u4e00-\u9fff]{2,3}", previous)
+            and re.fullmatch(r"[\u4e00-\u9fff]{2,3}", current)
+        ):
+            continue
+        comparable_pairs += 1
+        if previous[-1] == current[0]:
+            overlap_pairs += 1
+
+    return comparable_pairs >= 2 and overlap_pairs >= max(2, comparable_pairs - 1)
+
+
+def _looks_like_section_heading(text: str) -> bool:
+    return bool(
+        re.search(
+            r"^(?:摘要|摘\s*要|关键词|关键字|〔\s*(?:关键词|关键字)\s*〕|Abstract|Keywords?|引言|绪论|参考文献|第一章|一、|0[.、]?\s*引言|1[.、]?\s*引言|〔\s*(?:中图法分类号|引用本文格式)\s*〕|中图法分类号|引用本文格式)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _dedupe_keyword_warnings(warnings: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for warning in warnings:
+        normalized = normalize_line(warning)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
+def _keyword_label_pattern(language: str) -> str:
+    if language == "zh":
+        return r"(?:〔\s*(?:关键词|关键字)\s*〕|\[\s*(?:关键词|关键字)\s*\]|(?:关键词|关键字))"
+    return r"(?:keywords?|key words|index terms?)"
+
+
+def _strip_keyword_label_prefix(text: str, *, language: str) -> str:
+    stripped = re.sub(
+        rf"^\s*{_keyword_label_pattern(language)}\s*[：:]?\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    return stripped.lstrip("〕】])} ").strip()
+
+
+def _looks_like_english_title_line(text: str) -> bool:
+    normalized = normalize_whitespace(text)
+    if not normalized or re.search(r"[\u4e00-\u9fff]", normalized):
+        return False
+    if re.search(r"(doi|issn|keywords?|abstract|available online|received|accepted)", normalized, re.IGNORECASE):
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z'/-]*", normalized)
+    return len(words) >= 3 and sum(len(word) for word in words) >= 18 and len(normalized) <= 180
+
+
+def _looks_like_keyword_stop_line(text: str, *, language: str) -> bool:
+    normalized = normalize_whitespace(text)
+    if not normalized:
+        return False
+    if re.search(
+        r"^(?:〔?\s*(?:中图法分类号|引用本文格式|英文标题|英文题名)\s*〕?|Abstract\b|ABSTRACT\b|Keywords?\b|Key words\b|Index Terms?\b|引言\b|绪论\b|问题提出\b|参考文献\b|一、|第一章|0[.、]?\s*引言|1[.、]?\s*引言)",
+        normalized,
+        re.IGNORECASE,
+    ):
+        return True
+    if language == "zh" and _looks_like_english_title_line(normalized):
+        return True
+    if language == "en" and re.search(r"^(?:摘要|摘\s*要|关键词|关键字)\b", normalized, re.IGNORECASE):
+        return True
+    return False
+
+
+def _trim_keyword_block(raw_block: str, *, language: str) -> str:
+    if not raw_block.strip():
+        return ""
+
+    text = raw_block.replace("\r\n", "\n").replace("\r", "\n")
+    text = _strip_keyword_label_prefix(text, language=language)
+    collected: list[str] = []
+
+    for raw_line in text.split("\n"):
+        line = normalize_whitespace(raw_line)
+        if not line:
+            if collected:
+                break
+            continue
+        if _looks_like_keyword_stop_line(line, language=language):
+            break
+        line = re.sub(
+            r"\s*(?:〔?\s*(?:中图法分类号|引用本文格式|英文标题|英文题名)\s*〕?|Abstract|ABSTRACT|Keywords?|Key words|Index Terms?|引言|绪论|问题提出|参考文献|一、|第一章|0[.、]?\s*引言|1[.、]?\s*引言).*$",
+            "",
+            line,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
+        line = line.lstrip("〕】])} ").strip(" ：:；;，,、/|")
+        if line:
+            collected.append(line)
+
+    if not collected:
+        fallback = normalize_whitespace(text)
+        fallback = re.sub(
+            r"\s*(?:〔?\s*(?:中图法分类号|引用本文格式|英文标题|英文题名)\s*〕?|Abstract|ABSTRACT|Keywords?|Key words|Index Terms?|引言|绪论|问题提出|参考文献|一、|第一章|0[.、]?\s*引言|1[.、]?\s*引言).*$",
+            "",
+            fallback,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        return fallback.lstrip("〕】])} ").strip(" ：:；;，,、/|")
+
+    trimmed = "\n".join(collected)
+    trimmed = re.sub(r"\n{2,}", "\n", trimmed)
+    return trimmed.strip()
+
+
+def _normalize_keyword_items(text: str, *, language: str, prefer_space_split: bool) -> list[str]:
+    if prefer_space_split and language == "zh":
+        parts = re.split(r"\s+", re.sub(r"[\r\n\t]+", " ", text))
+    else:
+        normalized = re.sub(r"[、，,；;]", "|", text)
+        normalized = re.sub(r"[\n\r\t]+", "|", normalized)
+        parts = re.split(r"\|+", normalized)
+        if len(parts) <= 1:
+            parts = re.split(r"\s{2,}", normalized)
+        if len(parts) <= 1 and language == "zh" and re.search(r"[\u4e00-\u9fff]", text):
+            parts = re.split(r"\s+", re.sub(r"[\r\n\t]+", " ", text))
+
+    normalized_parts: list[str] = []
+    for part in parts:
+        subparts = [part]
+        if language == "zh" and re.search(r"\s+", part) and not re.search(r"[A-Za-z]", part):
+            candidate_subparts = [segment for segment in re.split(r"\s+", part) if segment.strip()]
+            if len(candidate_subparts) > 1:
+                subparts = candidate_subparts
+
+        for subpart in subparts:
+            item = normalize_line(subpart).strip("：:；;，,、/·• ")
+            if not item:
+                continue
+            if re.search(rf"^(?:{_keyword_label_pattern(language)}|keywords?|key words|index terms?)$", item, re.IGNORECASE):
+                continue
+            if re.fullmatch(r"[\d\s\-—–:：./()]+", item):
+                continue
+            if len(item) > 30 and re.search(r"[。！？；;]", item):
+                continue
+            if _contains_keyword_pollution(item):
+                continue
+            normalized_parts.append(item)
+    return normalized_parts
+
+
+def _extract_explicit_keywords(candidate_texts: list[str], *, language: str) -> tuple[list[str], str]:
+    patterns = _ZH_KEYWORD_PATTERNS if language == "zh" else _EN_KEYWORD_PATTERNS
+    for text in candidate_texts:
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            if not match:
+                continue
+            raw_block = normalize_whitespace(match.group(1))
+            keywords = _split_keywords_block(raw_block, language=language)
+            if keywords:
+                return keywords, raw_block
+    return [], ""
+
+
+_ZH_KEYWORD_PATTERNS = [
+    rf"{_keyword_label_pattern('zh')}\s*[：:]?\s*(.+?)(?=(?:〔?\s*(?:中图法分类号|引用本文格式|英文标题|英文题名)\s*〕?|英文摘要|ABSTRACT|Abstract|abstract|Keywords?|key words|index terms?|引言|绪论|问题提出|参考文献|一、|0[.、]?\s*引言|1[.、]?\s*引言|第一章|$))",
+]
+
+_EN_KEYWORD_PATTERNS = [
+    r"(?:keywords?|key words|index terms?)\s*[：:]?\s*(.+?)(?=(?:摘要|引言|introduction|一、|1[.、]|第一章|references?|$))",
+]
+
+KEYWORD_POLLUTION_TERMS = (
+    "摘要",
+    "abstract",
+    "作者",
+    "引言",
+    "基金",
+    "项目",
+    "issn",
+    "网络首发",
+    "doi",
+    "cn",
+)
+
+KEYWORD_STATEMENT_CUES = (
+    "本文",
+    "研究",
+    "提出",
+    "分析",
+    "表明",
+    "说明",
+    "构建",
+    "采用",
+    "通过",
+)
+
+
+def _split_keywords_block(raw_block: str, *, language: str) -> list[str]:
+    raw_has_multi_space = bool(re.search(r"[^\S\r\n]{2,}", raw_block))
+    cleaned = sanitize_metadata_fragments(_trim_keyword_block(raw_block, language=language))
+    cleaned = re.sub(
+        r"(?:引言|绪论|问题提出|一、|0[.、]?\s*引言|1[.、]?\s*引言|第一章|Abstract|ABSTRACT|abstract|references?|中图法分类号|引用本文格式)\s*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(rf"{_keyword_label_pattern(language)}\s*[：:]?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.lstrip("〕】])} ")
+    cleaned = cleaned.strip(" ：:；;，,、/|\n\t")
+    if not cleaned:
+        return []
+
+    normalized_parts = _normalize_keyword_items(cleaned, language=language, prefer_space_split=False)
+    if (
+        language == "zh"
+        and len(normalized_parts) == 1
+        and (raw_has_multi_space or re.search(r"\s+", cleaned))
+    ):
+        retry_parts = _normalize_keyword_items(cleaned, language=language, prefer_space_split=True)
+        if len(retry_parts) > len(normalized_parts):
+            normalized_parts = retry_parts
+
+    return compact_list(normalized_parts, MAX_KEYWORDS)
+
+
+def _extract_frequency_keywords(raw_text: str, title: str) -> list[str]:
+    text_window = raw_text[:8000]
+    english_counter = Counter(extract_english_tokens(text_window))
+    chinese_counter = extract_chinese_phrases(text_window)
+
+    candidates: list[str] = []
+    title_lower = title.lower()
+
+    for token, frequency in english_counter.most_common(10):
+        if frequency < 2:
+            continue
+        if token in title_lower and len(token) <= 4:
+            continue
+        candidates.append(token.title())
+
+    for phrase, frequency in chinese_counter.most_common(12):
+        if frequency < 2:
+            continue
+        if phrase in title:
+            candidates.append(phrase)
+            continue
+        candidates.append(phrase)
+
+    return compact_list(candidates, MAX_KEYWORDS)
