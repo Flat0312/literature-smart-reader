@@ -1,3 +1,14 @@
+---
+title: 文献智读
+emoji: 📘
+colorFrom: blue
+colorTo: green
+sdk: streamlit
+sdk_version: 1.45.0
+app_file: app.py
+pinned: false
+---
+
 # 文献智读
 
 《文献智读》是一个面向大学生课程写作场景的学习辅助 Web 工具。当前版本基于 `Python + Streamlit` 实现“上传单篇论文 PDF -> 提取关键信息 -> 生成课程写作辅助内容 -> 导出结果”的闭环，重点服务于课程汇报、课程论文前期整理和文献综述基础框架搭建。
