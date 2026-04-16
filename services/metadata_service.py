@@ -423,6 +423,12 @@ def _extract_author_candidates_from_title_zone(text: str, title: str) -> list[st
                 break
             continue
         if _is_plausible_author_candidate(line):
+            # Reject lines that look like sentences (contain punctuation or are too long)
+            compact = re.sub(r"\s+", "", line)
+            if len(compact) > 12 or re.search(r"[。！？!?，,；;：:、]", line):
+                if candidates:
+                    break
+                continue
             candidates.append(line)
             continue
         if candidates:
@@ -474,7 +480,9 @@ def _clean_author_candidates(candidates: list[str]) -> list[str]:
     for candidate in candidates:
         cleaned_authors.extend(_split_author_candidate(candidate))
     compacted = compact_list(cleaned_authors, 6)
-    return [author for author in compacted if _looks_like_author_name(author)]
+    result = [author for author in compacted if _looks_like_author_name(author)]
+    # Remove inter-character spaces in pure Chinese names
+    return [re.sub(r"\s+", "", a) if re.fullmatch(r"[\u4e00-\u9fff·\s]{2,16}", a) else a for a in result]
 
 
 def _split_author_candidate(candidate: str) -> list[str]:
@@ -568,7 +576,9 @@ def _looks_like_author_name(text: str) -> bool:
         return False
     if re.search(r"[。！？!?；;:：@]", normalized):
         return False
-    if re.fullmatch(r"[\u4e00-\u9fff·]{2,8}", normalized):
+    # Strip inter-character spaces for pure Chinese names (PDF extraction artifact)
+    compact = re.sub(r"\s+", "", normalized)
+    if re.fullmatch(r"[\u4e00-\u9fff·]{2,8}", compact):
         return True
     if re.fullmatch(r"[A-Za-z][A-Za-z.\-'\s]{1,30}", normalized):
         token_count = len([token for token in normalized.split() if token])
@@ -1151,7 +1161,15 @@ def _normalize_keyword_items(text: str, *, language: str, prefer_space_split: bo
                 continue
             if _contains_keyword_pollution(item):
                 continue
-            normalized_parts.append(item)
+            # Remove inter-character spaces in pure Chinese keyword phrases (PDF extraction artifact)
+            # Only strip if spaces appear between every character (char_count - 1 ≈ space_count)
+            if re.fullmatch(r"[\u4e00-\u9fff\s]{2,20}", item):
+                char_count = len(re.findall(r"[\u4e00-\u9fff]", item))
+                space_count = len(re.findall(r"\s+", item.strip()))
+                if char_count > 1 and space_count >= char_count - 1:
+                    item = re.sub(r"\s+", "", item)
+            if item:
+                normalized_parts.append(item)
     return normalized_parts
 
 
@@ -1205,6 +1223,8 @@ KEYWORD_STATEMENT_CUES = (
 
 def _split_keywords_block(raw_block: str, *, language: str) -> list[str]:
     raw_has_multi_space = bool(re.search(r"[^\S\r\n]{2,}", raw_block))
+    import logging as _logging
+    _logging.getLogger(__name__).debug("[keyword-debug] raw_block=%r", raw_block)
     cleaned = sanitize_metadata_fragments(_trim_keyword_block(raw_block, language=language))
     cleaned = re.sub(
         r"(?:引言|绪论|问题提出|一、|0[.、]?\s*引言|1[.、]?\s*引言|第一章|Abstract|ABSTRACT|abstract|references?|中图法分类号|引用本文格式)\s*$",

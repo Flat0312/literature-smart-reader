@@ -788,6 +788,9 @@ def _needs_keyword_llm_fallback(
         key in normalized_source for key in ("strategy_a", "strategy_b", "strategy_c", "explicit")
     ):
         return True
+    # Trigger LLM if any keyword looks like multiple words concatenated (too long)
+    if any(len(kw) > 10 and re.search(r"[\u4e00-\u9fff]{10,}", kw) for kw in current_keywords):
+        return True
     return False
 
 
@@ -838,12 +841,13 @@ def _keyword_fallback_with_chat(client: OpenAI, settings: RelaySettings, *, titl
 
 def _build_keyword_fallback_system_prompt() -> str:
     return (
-        "你是学术论文关键词整理助手。"
-        "请仅依据提供的论文标题、摘要和前文片段，整理 3 到 8 个最贴近原文的关键词。"
-        "优先保留原词，不要凭空发明术语，不要把完整句子当成关键词。"
-        "如果原文只清晰出现 2 到 4 个关键词，也可以少量返回，不要硬凑数量。"
-        "删除“摘要、作者、引言、本文、研究、结果”等泛化词。"
-        "输出 JSON 字段固定为 keywords 和 note。"
+        “你是学术论文关键词整理助手。”
+        “请仅依据提供的论文标题和关键词区原文，整理 3 到 8 个最贴近原文的关键词。”
+        “只能使用关键词区中明确出现的词，不得从摘要或正文中补充新词。”
+        “优先保留原词，不要凭空发明术语，不要把完整句子当成关键词。”
+        “如果原文只清晰出现 2 到 4 个关键词，也可以少量返回，不要硬凑数量。”
+        “删除”摘要、作者、引言、本文、研究、结果”等泛化词。”
+        “输出 JSON 字段固定为 keywords 和 note。”
     )
 
 
@@ -950,9 +954,9 @@ def _author_fallback_with_chat(
 def _build_author_fallback_system_prompt() -> str:
     return (
         "你是论文首页作者识别助手。"
-        "只能依据给定的论文标题和首页前部文本识别作者名单。"
+        "只能依据给定的论文标题和首页前部文本识别作者名单，不得从正文、摘要或其他部分补充。"
         "不要猜测，不要补充机构，不要返回解释，不要把单位、学校、邮箱、摘要、关键词当作作者。"
-        "如果无法稳定判断作者，请返回空数组。"
+        "只返回在首页明确出现的作者姓名，如果无法稳定判断作者，请返回空数组。"
         "输出 JSON 字段固定为 authors 和 note。"
     )
 

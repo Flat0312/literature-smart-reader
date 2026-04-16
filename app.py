@@ -5,10 +5,22 @@ from __future__ import annotations
 from pathlib import Path
 from textwrap import dedent
 
+import logging
+import os
+
 import streamlit as st
 from dotenv import load_dotenv
 
+logging.basicConfig(level=logging.DEBUG)
 load_dotenv()
+
+# Load Streamlit secrets into env vars (for cloud deployment)
+try:
+    for _k, _v in st.secrets.items():
+        if _k not in os.environ:
+            os.environ[_k] = str(_v)
+except Exception:
+    pass
 
 from config.settings import APP_ICON, APP_SUBTITLE, APP_TITLE, PAGE_HOME, PAGE_ORDER, PAGE_RESULT, PAGE_UPLOAD
 from utils.session import get_current_page, init_session_state

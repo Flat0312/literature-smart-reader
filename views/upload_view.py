@@ -125,7 +125,7 @@ def render_upload_view() -> None:
         )
         st.markdown(_build_stage_panel_html(parse_feedback), unsafe_allow_html=True)
 
-    action_columns = st.columns([3, 1])
+    action_columns = st.columns([3, 1, 1])
     with action_columns[0]:
         parse_label = "解析中..." if stage == "processing" else "开始解析"
         parse_clicked = st.button(
@@ -137,6 +137,10 @@ def render_upload_view() -> None:
     with action_columns[1]:
         if st.button("返回首页", use_container_width=True):
             set_current_page(PAGE_HOME)
+            st.rerun()
+    with action_columns[2]:
+        if st.button("清除缓存", use_container_width=True):
+            st.session_state.pop(_RESULT_CACHE_KEY, None)
             st.rerun()
 
     if stage == "error":
