@@ -7,7 +7,10 @@ import json
 from html import escape
 from textwrap import dedent
 
+import logging
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 from config.settings import PAGE_HOME, PAGE_RESULT
 from services.paper_parse_service import PARSE_STEP_DEFINITIONS, ParsePipelineError, parse_uploaded_pdf
@@ -171,6 +174,17 @@ def render_upload_view() -> None:
             mark_analysis_failed("文件为空或无法读取，请重新上传。", feedback)
             st.session_state[UPLOAD_STATUS_KEY] = "error"
             st.rerun()
+        if uploaded_file.size > 20 * 1024 * 1024:
+            feedback = _build_terminal_feedback(
+                status="failed",
+                errors=["文件超过 20 MB，请压缩后重新上传。"],
+                category="pdf_read_failed",
+                error_stage="pdf_read",
+            )
+            set_parse_feedback(feedback)
+            mark_analysis_failed("文件超过 20 MB，请压缩后重新上传。", feedback)
+            st.session_state[UPLOAD_STATUS_KEY] = "error"
+            st.rerun()
 
         st.session_state[UPLOAD_STATUS_KEY] = "processing"
         st.session_state[UPLOAD_PENDING_SIGNATURE_KEY] = file_signature
@@ -191,7 +205,21 @@ def render_upload_view() -> None:
     )
 
 
+_RESULT_CACHE_KEY = "upload_v3_result_cache"
+
+
 def _handle_analysis(uploaded_file, file_signature: str) -> None:
+    # Check in-memory cache first
+    cache: dict = st.session_state.setdefault(_RESULT_CACHE_KEY, {})
+    if file_signature in cache:
+        mark_analysis_succeeded(cache[file_signature])
+        st.session_state[UPLOAD_STATUS_KEY] = "success"
+        st.session_state.pop(UPLOAD_PENDING_SIGNATURE_KEY, None)
+        st.session_state[UPLOAD_LAST_SIGNATURE_KEY] = file_signature
+        set_current_page(PAGE_RESULT)
+        st.rerun()
+        return
+
     clear_analysis_result()
     clear_parse_feedback()
     set_error_message("")
@@ -217,8 +245,7 @@ def _handle_analysis(uploaded_file, file_signature: str) -> None:
 
     try:
         result = parse_uploaded_pdf(uploaded_file.name, uploaded_file.getvalue(), progress_callback=on_progress)
-        print("[structured-debug]")
-        print(json.dumps(result.structured_debug, ensure_ascii=False, indent=2))
+        logger.debug("[structured-debug] %s", json.dumps(result.structured_debug, ensure_ascii=False, indent=2))
     except ParsePipelineError as exc:
         feedback = exc.parse_feedback or get_parse_feedback()
         set_parse_feedback(feedback)
@@ -242,6 +269,7 @@ def _handle_analysis(uploaded_file, file_signature: str) -> None:
         st.session_state["upload_v3_last_error"] = message
         st.rerun()
 
+    cache[file_signature] = result
     mark_analysis_succeeded(result)
     st.session_state[UPLOAD_STATUS_KEY] = "success"
     st.session_state.pop(UPLOAD_PENDING_SIGNATURE_KEY, None)

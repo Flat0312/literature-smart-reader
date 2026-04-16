@@ -6,6 +6,9 @@ from pathlib import Path
 from textwrap import dedent
 
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from config.settings import APP_ICON, APP_SUBTITLE, APP_TITLE, PAGE_HOME, PAGE_ORDER, PAGE_RESULT, PAGE_UPLOAD
 from utils.session import get_current_page, init_session_state

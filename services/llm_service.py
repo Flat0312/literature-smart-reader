@@ -6,8 +6,12 @@ import os
 import re
 from dataclasses import dataclass, field
 
+import logging
+
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError
+
+logger = logging.getLogger(__name__)
 
 from config.settings import (
     COURSE_SUPPORT_LLM_MAX_OUTPUT_TOKENS,
@@ -443,14 +447,14 @@ def rewrite_structured_result(request: StructuredRewriteRequest) -> StructuredRe
     except Exception as exc:
         responses_error = exc
         debug_info["responses_error"] = str(exc)
-        print(f"[structured-llm] Responses API failed, fallback to chat.completions: {exc}")
+        logger.warning("[structured-llm] Responses API failed, fallback to chat.completions: %s", exc)
 
     try:
         debug_info["attempted_path"].append("chat.completions")
         return _rewrite_with_chat_completions(client, settings, request, debug_info=debug_info)
     except Exception as exc:
         debug_info["chat_error"] = str(exc)
-        print(f"[structured-llm] Chat Completions fallback failed: {exc}")
+        logger.warning("[structured-llm] Chat Completions fallback failed: %s", exc)
         if responses_error is not None:
             raise RelayRequestError("LLM 调用失败，已自动回退到规则结果。") from exc
         raise RelayRequestError("LLM 未返回有效结果，已自动回退到规则结果。") from exc
@@ -571,7 +575,7 @@ def _rewrite_with_chat_completions(
         )
     except Exception as exc:
         debug_info["chat_json_mode_error"] = str(exc)
-        print(f"[structured-llm] chat.completions JSON mode unavailable, retry without response_format: {exc}")
+        logger.warning("[structured-llm] chat.completions JSON mode unavailable, retry without response_format: %s", exc)
         completion = client.chat.completions.create(**request_kwargs)
 
     content = _extract_chat_content(completion)
