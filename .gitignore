@@ -12,3 +12,4 @@ env/
 !.env.example
 .streamlit/secrets.toml
 .tmp.*
+*.py.tmp.*

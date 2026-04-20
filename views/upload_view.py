@@ -444,10 +444,12 @@ def _build_status_card_html(*, title: str, body: str, modifier: str) -> str:
         "processing": "⏳",
         "error": "!",
     }.get(modifier, "•")
+    role = "alert" if modifier == "error" else "status"
+    aria_label = {"ready": "成功", "processing": "处理中", "error": "错误"}.get(modifier, "")
     return _html_block(
         f"""
-        <div class="upload-state-card upload-state-card--{escape(modifier)}">
-          <div class="upload-state-card__icon">{icon}</div>
+        <div class="upload-state-card upload-state-card--{escape(modifier)}" role="{role}" aria-label="{aria_label}">
+          <div class="upload-state-card__icon" aria-hidden="true">{icon}</div>
           <div class="upload-state-card__body">
             <strong>{escape(title)}</strong>
             <span>{escape(body)}</span>

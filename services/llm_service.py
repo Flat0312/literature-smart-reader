@@ -493,9 +493,9 @@ def _build_system_prompt() -> str:
         "每个字段控制在 1 到 2 句以内，优先贴近原文表达，不要自由扩写。"
         "若某字段已有非空候选，请优先保留其原文含义与表述，仅在明显不完整时做轻微整理。"
         "当正文候选不足但中文摘要可用时，可以基于中文摘要做最小必要的模型概括。"
-        "如果需要模型补充概括，只能在 note 中标记“模型概括”，不要在字段正文里写“根据摘要推断”。"
+        "如果需要模型补充概括，只能在 note 中标记「模型概括」，不要在字段正文里写「根据摘要推断」。"
         "删除网址、基金编号、项目编号、出版说明、网络首发说明、参考文献标号和无关片段。"
-        "若证据不足，直接返回“暂未识别到高置信度结果”。"
+        "若证据不足，直接返回「暂未识别到高置信度结果」。"
         "输出 JSON 字段固定为 research_question、research_method、core_conclusion、note。"
     )
 
@@ -519,7 +519,7 @@ def _build_input(request: StructuredRewriteRequest) -> str:
         lines.append(f"{label}{source_suffix}：{candidate_text or '（空）'}")
     if source_context["abstract_fallback_enabled"]:
         lines.append(f"中文摘要补充文本：{source_context['abstract_fallback_text']}")
-        lines.append("当正文候选为空或过短时，请仅做克制补全；不要在字段正文中写“根据摘要推断”。")
+        lines.append("当正文候选为空或过短时，请仅做克制补全；不要在字段正文中写「根据摘要推断」。")
     lines.append("已有非空候选字段请尽量贴近原文；只有空字段再补充。")
     return "\n".join(lines)
 
@@ -709,7 +709,7 @@ def _build_payload_low_confidence_reason(payload: StructuredRewritePayload) -> s
         payload.core_conclusion.strip(),
     ]
     if all(value == STRUCTURED_LOW_CONFIDENCE_TEXT for value in values):
-        return "模型返回的三个字段均为“暂未识别到高置信度结果”。"
+        return "模型返回的三个字段均为「暂未识别到高置信度结果」。"
     return ""
 
 
@@ -841,13 +841,13 @@ def _keyword_fallback_with_chat(client: OpenAI, settings: RelaySettings, *, titl
 
 def _build_keyword_fallback_system_prompt() -> str:
     return (
-        “你是学术论文关键词整理助手。”
-        “请仅依据提供的论文标题和关键词区原文，整理 3 到 8 个最贴近原文的关键词。”
-        “只能使用关键词区中明确出现的词，不得从摘要或正文中补充新词。”
-        “优先保留原词，不要凭空发明术语，不要把完整句子当成关键词。”
-        “如果原文只清晰出现 2 到 4 个关键词，也可以少量返回，不要硬凑数量。”
-        “删除”摘要、作者、引言、本文、研究、结果”等泛化词。”
-        “输出 JSON 字段固定为 keywords 和 note。”
+        "你是学术论文关键词整理助手。"
+        "请仅依据提供的论文标题和关键词区原文，整理 3 到 8 个最贴近原文的关键词。"
+        "只能使用关键词区中明确出现的词，不得从摘要或正文中补充新词。"
+        "优先保留原词，不要凭空发明术语，不要把完整句子当成关键词。"
+        "如果原文只清晰出现 2 到 4 个关键词，也可以少量返回，不要硬凑数量。"
+        "删除」摘要、作者、引言、本文、研究、结果」等泛化词。"
+        "输出 JSON 字段固定为 keywords 和 note。"
     )
 
 
@@ -1067,7 +1067,7 @@ def _build_course_support_system_prompt() -> str:
         "你是面向大学生课程写作场景的论文解读助手。"
         "请仅依据提供的标题、作者、关键词、摘要、结构化字段和正文预览生成结果，不得虚构实验、数据、结论或论文未出现的研究对象。"
         "输出要适合课程汇报、讲稿和课程论文前期整理。"
-        "当信息不足时，请明确使用保守表述，例如“根据当前可识别内容，暂可归纳为……”。"
+        "当信息不足时，请明确使用保守表述，例如「根据当前可识别内容，暂可归纳为……」。"
         "innovation_points 与 limitation_points 各输出 2 到 4 条；outline 字段输出条目化中文短句。"
         "输出 JSON 字段固定为 plain_language_summary、method_explanation、innovation_points、limitation_points、course_presentation_outline、course_paper_outline、literature_review_outline、note。"
     )
@@ -1194,13 +1194,13 @@ def _build_local_innovation_points(request: CourseSupportRequest) -> list[str]:
     if method:
         items.append(f"作者使用{_strip_terminal(method)}展开分析，使研究不只停留在概念描述层面。")
     if conclusion:
-        items.append(f"论文形成了相对清晰的核心结论，方便整理成课堂展示中的“主要发现”。")
+        items.append(f"论文形成了相对清晰的核心结论，方便整理成课堂展示中的「主要发现」。")
 
     sanitized = _sanitize_course_list(items, [], minimum=2, maximum=4)
     if sanitized:
         return sanitized
     return [
-        "根据当前可识别内容，论文对研究主题做了相对明确的聚焦，适合整理为课程汇报中的“研究对象与问题”。",
+        "根据当前可识别内容，论文对研究主题做了相对明确的聚焦，适合整理为课程汇报中的「研究对象与问题」。",
         "当前结果已提取出研究方法和核心结论，可作为课堂展示时概括论文贡献的基础。",
     ]
 
@@ -1240,11 +1240,11 @@ def _build_course_presentation_outline(
     conclusion = _meaningful_field(request.core_conclusion) or "论文的主要发现"
     return [
         f"研究背景与选题缘起：说明{topic}为什么值得在课程中讨论。",
-        f"研究问题：概括论文试图回答“{_strip_terminal(question)}”。",
+        f"研究问题：概括论文试图回答「{_strip_terminal(question)}」。",
         f"研究方法：简述作者如何通过{_strip_terminal(method)}展开分析。",
-        f"主要发现：提炼论文的核心结论，即“{_strip_terminal(conclusion)}”。",
+        f"主要发现：提炼论文的核心结论，即「{_strip_terminal(conclusion)}」。",
         f"创新与不足：结合已整理的 {len(innovation_points)} 条创新点和 {len(limitation_points)} 条不足做课堂讨论。",
-        "可汇报结论：收束为“这篇论文对课程主题带来了什么启发”。",
+        "可汇报结论：收束为「这篇论文对课程主题带来了什么启发」。",
     ]
 
 
@@ -1259,7 +1259,7 @@ def _build_course_paper_outline(
     return [
         f"引言：交代{topic}的研究背景、课程关联与选题意义。",
         "文献内容整理：概括论文的研究问题、研究对象和关键词。",
-        f"方法与结论分析：围绕{_strip_terminal(method)}和“{_strip_terminal(conclusion)}”展开说明。",
+        f"方法与结论分析：围绕{_strip_terminal(method)}和「{_strip_terminal(conclusion)}」展开说明。",
         f"创新点分析：从已整理的 {len(innovation_points)} 条创新点中提炼可写入正文的评价。",
         f"不足与反思：结合 {len(limitation_points)} 条不足分析论文的局限与可改进处。",
         "可延展讨论：提出可与其他文献继续比较的议题或研究方向。",
@@ -1276,7 +1276,7 @@ def _build_literature_review_outline(
     method = _meaningful_field(request.research_method) or "作者采用的方法路径"
     return [
         f"研究主题定位：明确本文可归入的研究主题是{topic}。",
-        f"研究对象与问题：记录论文围绕“{_strip_terminal(question)}”展开讨论。",
+        f"研究对象与问题：记录论文围绕「{_strip_terminal(question)}」展开讨论。",
         f"方法路径：整理作者采用的{_strip_terminal(method)}以及相应分析思路。",
         "主要观点与发现：提炼论文可纳入综述的核心观点和结论。",
         f"创新与不足：汇总 {len(innovation_points)} 条创新点和 {len(limitation_points)} 条不足作为评价维度。",
@@ -1348,7 +1348,7 @@ def _topic_phrase(request: CourseSupportRequest) -> str:
     title = _sanitize_course_text(request.title)
     if title and title != "未识别标题":
         if len(title) <= 28:
-            return f"“{title}”"
+            return f"「{title}」"
         keywords = compact_list(request.keywords, 2)
         if keywords:
             return "、".join(keywords)

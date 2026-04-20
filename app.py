@@ -11,7 +11,7 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.WARNING)
 load_dotenv()
 
 # Load Streamlit secrets into env vars (for cloud deployment)
@@ -44,8 +44,9 @@ def render_navigation(current_page: str) -> None:
     items = []
     for page_name in PAGE_ORDER:
         active_class = "active" if page_name == current_page else ""
-        items.append(f'<span class="nav-step {active_class}">{page_labels[page_name]}</span>')
-    st.markdown(f'<div class="nav-shell">{"".join(items)}</div>', unsafe_allow_html=True)
+        aria_current = ' aria-current="page"' if page_name == current_page else ''
+        items.append(f'<span class="nav-step {active_class}"{aria_current}>{page_labels[page_name]}</span>')
+    st.markdown(f'<nav aria-label="步骤导航" class="nav-shell">{"".join(items)}</nav>', unsafe_allow_html=True)
 
 
 def main() -> None:

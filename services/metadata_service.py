@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import re
 from collections import Counter
 from typing import Any
@@ -80,19 +81,9 @@ KEYWORD_POLLUTION_TERMS = (
     "issn",
     "网络首发",
     "doi",
+    "cn",
 )
 
-KEYWORD_SENTENCE_HINTS = (
-    "本文",
-    "本研究",
-    "通过",
-    "采用",
-    "提出",
-    "表明",
-    "研究",
-    "分析",
-    "结果",
-)
 
 KEYWORD_STRATEGY_BONUS = {
     "strategy_a": 3.0,
@@ -588,13 +579,9 @@ def _looks_like_author_name(text: str) -> bool:
 
 
 def _split_compact_chinese_author_names(text: str) -> list[str]:
-    if len(text) == 4:
+    if len(text) in (4, 5):
         return [text[:2], text[2:]]
-    if len(text) == 5:
-        return [text[:2], text[2:]]
-    if len(text) == 6:
-        return [text[:3], text[3:]]
-    if len(text) == 7:
+    if len(text) in (6, 7):
         return [text[:3], text[3:]]
     if len(text) == 8:
         return [text[:4], text[4:]]
@@ -1195,36 +1182,11 @@ _EN_KEYWORD_PATTERNS = [
     r"(?:keywords?|key words|index terms?)\s*[：:]?\s*(.+?)(?=(?:摘要|引言|introduction|一、|1[.、]|第一章|references?|$))",
 ]
 
-KEYWORD_POLLUTION_TERMS = (
-    "摘要",
-    "abstract",
-    "作者",
-    "引言",
-    "基金",
-    "项目",
-    "issn",
-    "网络首发",
-    "doi",
-    "cn",
-)
-
-KEYWORD_STATEMENT_CUES = (
-    "本文",
-    "研究",
-    "提出",
-    "分析",
-    "表明",
-    "说明",
-    "构建",
-    "采用",
-    "通过",
-)
 
 
 def _split_keywords_block(raw_block: str, *, language: str) -> list[str]:
     raw_has_multi_space = bool(re.search(r"[^\S\r\n]{2,}", raw_block))
-    import logging as _logging
-    _logging.getLogger(__name__).debug("[keyword-debug] raw_block=%r", raw_block)
+    logging.getLogger(__name__).debug("[keyword-debug] raw_block=%r", raw_block)
     cleaned = sanitize_metadata_fragments(_trim_keyword_block(raw_block, language=language))
     cleaned = re.sub(
         r"(?:引言|绪论|问题提出|一、|0[.、]?\s*引言|1[.、]?\s*引言|第一章|Abstract|ABSTRACT|abstract|references?|中图法分类号|引用本文格式)\s*$",
