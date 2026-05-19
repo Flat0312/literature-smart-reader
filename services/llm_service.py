@@ -25,6 +25,7 @@ from config.settings import (
     STRUCTURED_LLM_TIMEOUT_SECONDS,
     STRUCTURED_LOW_CONFIDENCE_TEXT,
 )
+from models.paper_result import STRUCTURED_FIELD_LABELS
 from services.structured_rewrite_service import (
     StructuredRewriteRequest,
     StructuredRewriteResult,
@@ -651,22 +652,13 @@ def _build_result_note(
 ) -> str:
     cleaned_note = (payload_note or "").strip()
     if supplemented_fields:
-        supplemented_text = "、".join(_field_label(field_name) for field_name in supplemented_fields)
+        supplemented_text = "、".join(STRUCTURED_FIELD_LABELS.get(field_name, field_name) for field_name in supplemented_fields)
         if preserved_rule_fields:
             return f"模型概括仅补充了 {supplemented_text}，其余字段保留原文规则抽取结果。"
         return f"模型概括生成了 {supplemented_text}。"
     if preserved_rule_fields:
         return "当前结果优先保留原文规则抽取结果。"
     return cleaned_note
-
-
-def _field_label(field_name: str) -> str:
-    mapping = {
-        "research_question": "研究问题",
-        "research_method": "研究方法",
-        "core_conclusion": "核心结论",
-    }
-    return mapping.get(field_name, field_name)
 
 
 def _parse_payload_from_text(text: str) -> StructuredRewritePayload | None:

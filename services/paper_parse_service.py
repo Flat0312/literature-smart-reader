@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import re
 from time import perf_counter
@@ -12,7 +13,7 @@ from config.settings import (
     STRUCTURED_LLM_MIN_CANDIDATE_CHARS,
     TEXT_PREVIEW_LENGTH,
 )
-from models.paper_result import NormalizedPaperParseResult, PaperResult
+from models.paper_result import STRUCTURED_FIELD_LABELS, NormalizedPaperParseResult, PaperResult
 from services.llm_service import (
     CourseSupportRequest,
     RelayConfigError,
@@ -302,12 +303,6 @@ def build_paper_result(
             chinese_keyword_block=structure_blocks.keywords_zh_text,
             english_keyword_block=structure_blocks.keywords_en_text,
         )
-        keyword_result = _stabilize_keyword_result(
-            keyword_result,
-            title=title,
-            priority_text=text_bundle.priority_text,
-            body_text=text_bundle.body_text,
-        )
     except Exception as exc:
         tracker.set_timing("metadata_extract_ms", metadata_started_at)
         tracker.fail("metadata_extract", "标题、作者或关键词识别失败。")
@@ -341,7 +336,22 @@ def build_paper_result(
     structured_request.debug_info["llm_input_source"] = llm_debug_seed["llm_input_source"]
     structured_request.debug_info["abstract_fallback_enabled"] = llm_debug_seed["abstract_fallback_enabled"]
 
-    structured_result, structured_notice, llm_debug = _resolve_structured_result(structured_request, llm_debug_seed)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        kw_future = executor.submit(
+            _stabilize_keyword_result,
+            keyword_result,
+            title=title,
+            priority_text=text_bundle.priority_text,
+            body_text=text_bundle.body_text,
+        )
+        structured_future = executor.submit(
+            _resolve_structured_result,
+            structured_request,
+            llm_debug_seed,
+        )
+        keyword_result = kw_future.result()
+        structured_result, structured_notice, llm_debug = structured_future.result()
+
     tracker.set_timing("structured_extract_ms", structured_started_at)
     tracker.complete("structured_extract", "主摘要与结构化字段已生成。")
 
@@ -459,6 +469,7 @@ def build_paper_result(
     }
 
     parse_status = "partial_success" if parse_warnings else "success"
+    parse_errors = _classify_parse_errors(parse_warnings, parsed_result)
     result = PaperResult(
         file_name=file_name,
         parsed_result=parsed_result,
@@ -468,7 +479,7 @@ def build_paper_result(
         text_preview=reflow_text_for_display(build_preview(text_bundle.body_text, TEXT_PREVIEW_LENGTH)),
         parse_status=parse_status,
         parse_steps=tracker.snapshot(),
-        parse_errors=[],
+        parse_errors=parse_errors,
         parse_timings=dict(tracker.timings),
     )
     structured_debug["standard_result"] = result.as_standard_dict()
@@ -502,6 +513,19 @@ def build_paper_result(
             parse_feedback=parse_feedback,
         )
     return result
+
+
+def _classify_parse_errors(warnings: list[str], parsed_result: NormalizedPaperParseResult) -> list[str]:
+    errors: list[str] = []
+    for warning in warnings:
+        normalized = normalize_line(warning)
+        if not normalized:
+            continue
+        if any(keyword in normalized for keyword in ("未识别", "失败", "不足", "无法", "为空")):
+            errors.append(normalized)
+    if not parsed_result.title or parsed_result.title == "未识别标题":
+        errors.append("未识别到论文标题。")
+    return _dedupe_items(errors)
 
 
 def build_parse_text_bundle(pdf_result: PdfExtractionResult) -> ParseTextBundle:
@@ -611,7 +635,7 @@ def _resolve_structured_result(structured_request, llm_debug_seed: dict[str, obj
         if structured_result.backend == "relay_precheck":
             structured_notice = "当前未从中文摘要中识别到足够明确的结构化字段。"
         elif supplemented_fields:
-            field_labels = "、".join(_field_label(field_name) for field_name in supplemented_fields)
+            field_labels = "、".join(STRUCTURED_FIELD_LABELS.get(field_name, field_name) for field_name in supplemented_fields)
             structured_notice = f"以下空缺字段由模型概括补充：{field_labels}；其余字段保留原文规则抽取结果。"
         else:
             structured_notice = "当前结构化字段优先保留原文规则抽取结果。"
@@ -1032,11 +1056,3 @@ def _classify_pdf_or_text_error(message: str) -> str:
         return "text_extract_failed"
     return "text_extract_failed"
 
-
-def _field_label(field_name: str) -> str:
-    mapping = {
-        "research_question": "研究问题",
-        "research_method": "研究方法",
-        "core_conclusion": "核心结论",
-    }
-    return mapping.get(field_name, field_name)

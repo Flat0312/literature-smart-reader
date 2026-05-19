@@ -6,7 +6,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 import re
 
-from models.paper_result import NormalizedPaperParseResult
+from models.paper_result import STRUCTURED_FIELD_LABELS, NormalizedPaperParseResult
 from services.llm_service import (
     RelayConfigError,
     RelayRequestError,
@@ -16,6 +16,7 @@ from services.llm_service import (
 from services.metadata_service import (
     KeywordExtractionResult,
     TitleExtractionResult,
+    extract_authors_with_source,
     extract_keywords_with_source,
     extract_title_with_source,
 )
@@ -218,7 +219,7 @@ def _build_parse_warnings(
     if keyword_result.debug_info.get("low_confidence"):
         warnings.append("关键词提取置信度较低。")
     if normalized_result.llm_supplemented_fields:
-        labels = "、".join(_field_label(field_name) for field_name in normalized_result.llm_supplemented_fields)
+        labels = "、".join(STRUCTURED_FIELD_LABELS.get(field_name, field_name) for field_name in normalized_result.llm_supplemented_fields)
         warnings.append(f"结构化字段中的 {labels} 由模型概括补充。")
     if normalized_result.structured_field_count() == 0:
         warnings.append("未从原文摘要中识别到稳定的结构化字段。")
@@ -308,16 +309,9 @@ def _extract_keyword_block(candidate_texts: list[str], *, language: str) -> str:
     return ""
 
 
-def _extract_author_block(text: str) -> str:
-    lines = [normalize_line(line) for line in text.splitlines()[:12] if normalize_line(line)]
-    for line in lines[1:6]:
-        if re.search(r"(摘要|abstract|关键词|关键字|keywords?)", line, re.IGNORECASE):
-            break
-        if re.search(r"(大学|学院|研究院|研究所|department|university|college)", line, re.IGNORECASE):
-            continue
-        if re.fullmatch(r"[\u4e00-\u9fff·\s]{2,30}", line):
-            return line
-    return ""
+def _extract_author_block(text: str, title: str = "") -> str:
+    result = extract_authors_with_source(text, title=title, priority_text=text)
+    return "、".join(result.authors) if result.authors else ""
 
 
 def _extract_english_title(text: str) -> str:
@@ -360,12 +354,3 @@ def _build_candidate_debug(structured_request) -> dict[str, object]:
         "research_method_filtered": field_debug.get("research_method", {}).get("filtered_out", []),
         "core_conclusion_filtered": field_debug.get("core_conclusion", {}).get("filtered_out", []),
     }
-
-
-def _field_label(field_name: str) -> str:
-    mapping = {
-        "research_question": "研究问题",
-        "research_method": "研究方法",
-        "core_conclusion": "核心结论",
-    }
-    return mapping.get(field_name, field_name)

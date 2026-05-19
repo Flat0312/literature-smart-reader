@@ -416,7 +416,7 @@ def _extract_author_candidates_from_title_zone(text: str, title: str) -> list[st
         if _is_plausible_author_candidate(line):
             # Reject lines that look like sentences (contain punctuation or are too long)
             compact = re.sub(r"\s+", "", line)
-            if len(compact) > 12 or re.search(r"[。！？!?，,；;：:、]", line):
+            if len(compact) > 12 or re.search(r"[。！？!?,；;：:]", line):
                 if candidates:
                     break
                 continue
