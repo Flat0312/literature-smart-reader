@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 import re
 from time import perf_counter
 
@@ -18,6 +19,7 @@ from services.llm_service import (
     CourseSupportRequest,
     RelayConfigError,
     RelayRequestError,
+    _build_local_course_support_result,
     fallback_keywords_with_llm,
     generate_course_support_material,
     get_relay_env_status,
@@ -26,6 +28,7 @@ from services.llm_service import (
 from services.metadata_service import (
     AuthorExtractionResult,
     KeywordExtractionResult,
+    TitleExtractionResult,
     extract_authors_with_source,
     extract_keywords_with_source,
     extract_title_with_source,
@@ -288,7 +291,18 @@ def build_paper_result(
             page_snapshots=pdf_result.pages,
             body_start_page_index=pdf_result.body_start_page_index,
         )
-        title = title_result.title or "未识别标题"
+        title, title_fallback_warning = _resolve_title_with_file_fallback(file_name, title_result.title)
+        if title != title_result.title:
+            title_result = TitleExtractionResult(
+                title=title,
+                source_page_index=title_result.source_page_index,
+                source_kind="file_name_fallback",
+                debug_info={
+                    **title_result.debug_info,
+                    "original_title": title_result.title,
+                    "fallback_reason": "extracted_title_unusable",
+                },
+            )
 
         structure_blocks = extract_structure_blocks(
             text_bundle.priority_text,
@@ -330,7 +344,7 @@ def build_paper_result(
         text_bundle.body_text,
         title=title,
         priority_text=text_bundle.priority_text,
-        chinese_abstract=structure_blocks.abstract_zh,
+        chinese_abstract=structure_blocks.abstract_zh or structure_blocks.abstract_en or structure_blocks.display_summary,
     )
     llm_debug_seed = _build_llm_debug_seed(structured_request)
     structured_request.debug_info["llm_input_source"] = llm_debug_seed["llm_input_source"]
@@ -349,8 +363,23 @@ def build_paper_result(
             structured_request,
             llm_debug_seed,
         )
-        keyword_result = kw_future.result()
-        structured_result, structured_notice, llm_debug = structured_future.result()
+        kw_error: Exception | None = None
+        structured_error: Exception | None = None
+        try:
+            keyword_result = kw_future.result()
+        except Exception as exc:
+            kw_error = exc
+        try:
+            structured_result, structured_notice, llm_debug = structured_future.result()
+        except Exception as exc:
+            structured_error = exc
+        if kw_error or structured_error:
+            error_parts = []
+            if kw_error:
+                error_parts.append(f"关键词稳定化失败：{kw_error}")
+            if structured_error:
+                error_parts.append(f"结构化字段生成失败：{structured_error}")
+            raise RuntimeError("；".join(error_parts))
 
     tracker.set_timing("structured_extract_ms", structured_started_at)
     tracker.complete("structured_extract", "主摘要与结构化字段已生成。")
@@ -393,7 +422,7 @@ def build_paper_result(
     try:
         course_support_result = generate_course_support_material(course_support_request)
     except Exception as exc:
-        course_support_result = generate_course_support_material(CourseSupportRequest())
+        course_support_result = _build_local_course_support_result(course_support_request)
         course_support_result.note = f"课程写作辅助生成失败，已回退到保守结果：{exc}"
         course_support_result.backend = "local_rule_exception_fallback"
         course_support_warnings.append("AI 解读部分生成失败，已回退到保守结果。")
@@ -423,7 +452,11 @@ def build_paper_result(
         structured_result=structured_result,
         explicit_abstract_labels_found=bool(structured_request.debug_info.get("explicit_abstract_labels_found", False)),
         course_support_result=course_support_result,
-        extra_warnings=course_support_warnings,
+        extra_warnings=[
+            *pdf_result.parse_warnings,
+            *([title_fallback_warning] if title_fallback_warning else []),
+            *course_support_warnings,
+        ],
     )
     parsed_result.parse_warnings = parse_warnings
 
@@ -526,6 +559,76 @@ def _classify_parse_errors(warnings: list[str], parsed_result: NormalizedPaperPa
     if not parsed_result.title or parsed_result.title == "未识别标题":
         errors.append("未识别到论文标题。")
     return _dedupe_items(errors)
+
+
+def _resolve_title_with_file_fallback(file_name: str, extracted_title: str) -> tuple[str, str]:
+    title = normalize_line(extracted_title or "")
+    file_title = _title_from_file_name(file_name)
+    if title and title != "未识别标题":
+        if file_title and _should_prefer_file_title(title, file_title):
+            return file_title, "PDF 标题候选疑似正文片段，已使用文件名中的论文标题。"
+        return title, ""
+
+    if not file_title:
+        return "未识别标题", ""
+    return file_title, "PDF 标题文本疑似乱码或不可用，已使用文件名作为标题。"
+
+
+def _title_from_file_name(file_name: str) -> str:
+    raw_stem = normalize_line(Path(file_name or "").stem)
+    parts = [normalize_line(part) for part in re.split(r"[_]+", raw_stem) if normalize_line(part)]
+    if len(parts) >= 2 and _looks_like_file_name_author(parts[-1]) and len("".join(parts[:-1])) >= 6:
+        stem = " ".join(parts[:-1])
+    else:
+        stem = " ".join(parts) if parts else raw_stem
+    stem = re.sub(r"\s{2,}", " ", stem).strip(" ._-")
+    if not stem or stem.lower() in {"in_memory", "sample", "empty"}:
+        return ""
+    if len(stem) < 4 or re.fullmatch(r"[A-Fa-f0-9]{8,}", stem):
+        return ""
+    return stem[:120].rstrip()
+
+
+def _looks_like_file_name_author(text: str) -> bool:
+    compact = re.sub(r"\s+", "", normalize_line(text))
+    common_surnames = "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜谢邹喻柏彭郎鲁韦昌马苗方俞任袁柳鲍史唐费薛雷贺倪汤罗毕郝安常乐于傅齐康伍余顾孟黄穆萧尹姚邵汪祁毛米贝明计伏成戴谈宋庞熊纪舒屈项祝董梁杜阮蓝闵季麻强贾路危江童颜郭梅盛林钟徐邱骆高夏蔡田胡凌霍虞万支卢莫房解宗丁宣邓杭洪包左石崔龚程裴陆翁荀惠曲封靳段富焦巴侯全班仲伊宫宁仇甘祖武符刘景詹龙叶郜黎印白怀从索赖卓蔺蒙池乔胥苍闻翟谭贡劳姬申冉雍桑桂牛通边燕尚农温庄晏柴瞿阎慕习鱼古易廖终衡耿匡国文寇广阙沃利蔚师巩聂晁辛阚简饶曾沙养鞠丰巢关相查荆游权益桓"
+    if re.fullmatch(r"[\u4e00-\u9fff]{2,4}", compact) and compact[0] in common_surnames:
+        return True
+    if re.fullmatch(r"[\u4e00-\u9fff]{2,4}(?:等|等人)", compact) and compact[0] in common_surnames:
+        return True
+    return False
+
+
+def _should_prefer_file_title(extracted_title: str, file_title: str) -> bool:
+    if _titles_are_aligned(extracted_title, file_title):
+        return False
+    return _looks_like_body_fragment_title(extracted_title)
+
+
+def _titles_are_aligned(extracted_title: str, file_title: str) -> bool:
+    extracted_compact = _compact_title_for_comparison(extracted_title)
+    file_compact = _compact_title_for_comparison(file_title)
+    if not extracted_compact or not file_compact:
+        return False
+    return extracted_compact in file_compact or file_compact in extracted_compact
+
+
+def _compact_title_for_comparison(text: str) -> str:
+    normalized = normalize_line(text)
+    return "".join(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", normalized)).lower()
+
+
+def _looks_like_body_fragment_title(text: str) -> bool:
+    normalized = normalize_line(text)
+    if len(normalized) < 36:
+        return False
+    return bool(
+        re.search(
+            r"(背景下|借助于|揭示|提供|指出|认为|表明|发现|提出|进行|概念是|由此|并将|看作是|定义为|形成了|阐释.{0,6}内涵)",
+            normalized,
+            re.IGNORECASE,
+        )
+    )
 
 
 def build_parse_text_bundle(pdf_result: PdfExtractionResult) -> ParseTextBundle:
@@ -826,27 +929,6 @@ def _stabilize_keyword_result(
     )
 
 
-def _extract_author_lines(text: str, title: str) -> list[str]:
-    lines = [normalize_line(line) for line in text.splitlines() if normalize_line(line)]
-    if not lines:
-        return []
-
-    normalized_title = normalize_line(title)
-    title_index = 0
-    for index, line in enumerate(lines[:12]):
-        if normalized_title and (line == normalized_title or normalized_title in line or line in normalized_title):
-            title_index = index
-            continue
-
-    authors: list[str] = []
-    for line in lines[title_index + 1:title_index + 6]:
-        if re.search(r"^(摘要|摘\s*要|关键词|关键字|abstract|keywords?|引言|绪论)", line, re.IGNORECASE):
-            break
-        if re.search(r"(大学|学院|研究院|研究所|department|university|college|institute)", line, re.IGNORECASE):
-            continue
-        if _looks_like_author_line(line):
-            authors.extend(_split_author_line(line))
-    return _dedupe_items(authors)[:6]
 
 
 def _extract_english_title(text: str) -> str:
@@ -1021,7 +1103,19 @@ def _build_pdf_debug(pdf_result, title_result) -> dict[str, object]:
         )
 
     return {
-        "version": "PDF 正文定位修复版",
+        "version": "PDF 多策略预检版",
+        "preflight": {
+            "page_count": pdf_result.preflight.page_count,
+            "extraction_strategy": pdf_result.preflight.extraction_strategy,
+            "quality_score": pdf_result.preflight.quality_score,
+            "is_probably_scanned": pdf_result.preflight.is_probably_scanned,
+            "is_low_text_density": pdf_result.preflight.is_low_text_density,
+            "is_garbled_heavy": pdf_result.preflight.is_garbled_heavy,
+            "has_images": pdf_result.preflight.has_images,
+            "warnings": pdf_result.preflight.warnings,
+            "diagnostics": pdf_result.preflight.diagnostics,
+        },
+        "extraction_attempts": pdf_result.extraction_attempts_debug,
         "pages": pages,
         "selected_body_start_page": pdf_result.body_start_page_index,
         "selected_body_pages": sorted(body_window_pages),

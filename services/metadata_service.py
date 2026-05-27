@@ -31,6 +31,17 @@ TITLE_METADATA_NOISE = (
     "杂志社",
 )
 
+TITLE_SECTION_PREFIX_PATTERN = re.compile(
+    r"^(?:专题序|专题导言|编者按|序言|导言|按语|主持人语)\s*[：:]",
+    re.IGNORECASE,
+)
+TITLE_SENTENCE_CUE_PATTERN = re.compile(
+    r"(?:在[^。！？；;]{0,24}背景下|本文|本研究|借助于|揭示|指出|认为|表明|发现|提出|进行|提供|以期|旨在|概念是"
+    r"|由此|并将|看作是|定义为|将[^。！？；;]{0,16}(?:为|是|看作)"
+    r"|是[^。！？；;]{0,16}的一种|在[^。！？；;]{0,16}中)",
+    re.IGNORECASE,
+)
+
 
 @dataclass(slots=True)
 class TitleExtractionResult:
@@ -82,6 +93,9 @@ KEYWORD_POLLUTION_TERMS = (
     "网络首发",
     "doi",
     "cn",
+    "本文著录格式",
+    "著录格式",
+    "中图分类号",
 )
 
 
@@ -357,26 +371,31 @@ def _extract_title_from_layout(first_page_blocks: list[dict]) -> str:
     if not lines:
         return ""
 
-    top_candidates = lines[:12]
-    highest_font = max((line["font_size"] for line in top_candidates), default=0.0)
-    if highest_font <= 0:
+    top_candidates = lines[:30]
+    valid_items = [
+        (index, line)
+        for index, line in enumerate(top_candidates)
+        if _is_valid_title_line(line["text"])
+    ]
+    if not valid_items:
         return ""
 
-    filtered = [
-        line for line in top_candidates
-        if line["font_size"] >= highest_font * 0.9
-        and line["y0"] <= max(line["y0"] for line in top_candidates) * TITLE_SCAN_TOP_RATIO * 3
-        and len(line["text"]) >= 6
-        and _is_valid_title_line(line["text"])
-    ]
+    highest_valid_font = max(float(line["font_size"]) for _, line in valid_items)
+    base_index, base_line = max(
+        valid_items,
+        key=lambda item: (float(item[1]["font_size"]), -float(item[1]["y0"])),
+    )
+    min_follow_font = max(highest_valid_font * 0.82, 8.0)
+    title_lines = [base_line["text"]]
+    for line in top_candidates[base_index + 1: base_index + TITLE_MAX_LINES + 2]:
+        if float(line["font_size"]) < min_follow_font:
+            break
+        if not _is_valid_title_line(line["text"]):
+            break
+        title_lines.append(line["text"])
+        if len(title_lines) >= TITLE_MAX_LINES:
+            break
 
-    if not filtered:
-        filtered = [
-            line for line in top_candidates
-            if line["font_size"] >= highest_font * 0.85 and _is_valid_title_line(line["text"])
-        ]
-
-    title_lines = [line["text"] for line in filtered[:TITLE_MAX_LINES]]
     title = normalize_line(" ".join(title_lines))
     return title if _is_valid_title_candidate(title) else ""
 
@@ -400,7 +419,7 @@ def _extract_author_candidates_from_title_zone(text: str, title: str) -> list[st
     if not lines:
         return []
 
-    title_indexes = _find_title_zone_indexes(lines, title)
+    title_indexes = _find_title_zone_indexes(lines, title, search_limit=80)
     if not title_indexes:
         return []
     start_index = min(max(title_indexes[-1] + 1, 0), len(lines))
@@ -424,7 +443,10 @@ def _extract_author_candidates_from_title_zone(text: str, title: str) -> list[st
             continue
         if candidates:
             break
-    return compact_list(candidates, 6)
+    if candidates:
+        return compact_list(candidates, 6)
+
+    return compact_list(_extract_author_candidates_before_title(lines, title_indexes), 6)
 
 
 def _extract_author_candidates_from_markers(text: str) -> list[str]:
@@ -445,12 +467,12 @@ def _extract_author_candidates_from_markers(text: str) -> list[str]:
     return compact_list(candidates, 6)
 
 
-def _find_title_zone_indexes(lines: list[str], title: str) -> list[int]:
+def _find_title_zone_indexes(lines: list[str], title: str, *, search_limit: int = 12) -> list[int]:
     normalized_title = normalize_line(title)
     if not normalized_title:
         return []
     matched_indexes: list[int] = []
-    for index, line in enumerate(lines[:12]):
+    for index, line in enumerate(lines[:search_limit]):
         if line == normalized_title or normalized_title in line or line in normalized_title:
             matched_indexes.append(index)
     if matched_indexes:
@@ -459,11 +481,33 @@ def _find_title_zone_indexes(lines: list[str], title: str) -> list[int]:
     title_compact = re.sub(r"\s+", "", normalized_title)
     if not title_compact:
         return []
-    for index, line in enumerate(lines[:12]):
+    for index, line in enumerate(lines[:search_limit]):
         compact_line = re.sub(r"\s+", "", line)
         if compact_line and (compact_line in title_compact or title_compact in compact_line):
             matched_indexes.append(index)
     return matched_indexes
+
+
+def _extract_author_candidates_before_title(lines: list[str], title_indexes: list[int]) -> list[str]:
+    if not title_indexes:
+        return []
+
+    title_index = min(title_indexes)
+    start_index = max(0, title_index - 10)
+    candidates: list[str] = []
+    for line in lines[start_index:title_index]:
+        if not line or AUTHOR_STOP_PATTERN.search(line):
+            continue
+        if AUTHOR_INSTITUTION_PATTERN.search(line):
+            continue
+        if AUTHOR_POSTCODE_PATTERN.search(line) or re.search(r"(?:江苏|南京|北京|上海|浙江|广东|省|市)", line):
+            continue
+        if _is_plausible_author_candidate(line):
+            compact = re.sub(r"\s+", "", line)
+            if len(compact) > 24 or re.search(r"[。！？!?；;]", line):
+                continue
+            candidates.append(line)
+    return compact_list(candidates, 8)
 
 
 def _clean_author_candidates(candidates: list[str]) -> list[str]:
@@ -485,7 +529,7 @@ def _split_author_candidate(candidate: str) -> list[str]:
     text = AUTHOR_EMAIL_PATTERN.sub(" ", text)
     text = AUTHOR_POSTCODE_PATTERN.sub(" ", text)
     text = re.sub(r"[①②③④⑤⑥⑦⑧⑨⑩]", " ", text)
-    text = re.sub(r"[*＊†‡#]+", " ", text)
+    text = re.sub(r"[*＊†‡#●•·]+", " ", text)
     text = re.sub(r"(?<=[\u4e00-\u9fffA-Za-z])\d+(?=[\u4e00-\u9fffA-Za-z])", "", text)
     text = re.sub(r"(?<=[\u4e00-\u9fffA-Za-z])\d+$", "", text)
     text = re.sub(r"\([^)]*(?:大学|学院|研究院|研究所|department|university|college|school|institute)[^)]*\)", "", text, flags=re.IGNORECASE)
@@ -595,11 +639,16 @@ def _authors_look_stable(authors: list[str]) -> bool:
 
 
 def _extract_title_from_page(page_text: str, page_blocks: list[dict]) -> tuple[str, str]:
+    lines = [normalize_line(line) for line in page_text.splitlines()]
+
     title = _extract_title_from_layout(page_blocks)
     if title:
         return title, "page_layout"
 
-    lines = [normalize_line(line) for line in page_text.splitlines()]
+    title = _extract_title_near_abstract(lines)
+    if title:
+        return title, "page_text_before_abstract"
+
     title = _extract_title_from_line_window(lines)
     if _is_valid_title_candidate(title):
         return title, "page_text"
@@ -627,6 +676,58 @@ def _extract_title_from_line_window(lines: list[str]) -> str:
 
     title = normalize_line(" ".join(candidates))
     return title if _is_valid_title_candidate(title) else ""
+
+
+def _extract_title_near_abstract(lines: list[str]) -> str:
+    normalized_lines = [normalize_line(line) for line in lines]
+    abstract_index = _find_abstract_label_index(normalized_lines)
+    if abstract_index is None:
+        return ""
+
+    candidates: list[str] = []
+    for line in reversed(normalized_lines[max(0, abstract_index - 10): abstract_index]):
+        if not line or _looks_like_title_neighbor_noise(line):
+            continue
+        if _is_valid_title_line(line):
+            candidates.append(line)
+            if len(candidates) >= TITLE_MAX_LINES:
+                break
+            continue
+        if candidates:
+            break
+
+    if not candidates:
+        return ""
+
+    title = normalize_line(" ".join(reversed(candidates)))
+    return title if _is_valid_title_candidate(title) else ""
+
+
+def _find_abstract_label_index(lines: list[str]) -> int | None:
+    for index, line in enumerate(lines):
+        if not line:
+            continue
+        if re.match(r"^(?:摘\s*要|摘要|abstract)\s*[：:]?", line, re.IGNORECASE):
+            return index
+        if line in {"摘", "摘 要"} and index + 1 < len(lines):
+            next_line = lines[index + 1]
+            if re.match(r"^要\s*[：:]?", next_line):
+                return index
+    return None
+
+
+def _looks_like_title_neighbor_noise(line: str) -> bool:
+    if re.fullmatch(r"[*＊·•●—\-–]+", line):
+        return True
+    if re.fullmatch(r"[\d\s，,、;；:：.()（）]+", line):
+        return True
+    if re.search(r"(大学|学院|研究院|研究所|实验室|中心|邮编|南京|江苏|department|university|college|institute)", line, re.IGNORECASE):
+        return True
+    if re.search(r"(@|e-?mail|google|facebook|arxiv|doi|issn)", line, re.IGNORECASE):
+        return True
+    if _contains_authorish_text(line) and len(re.sub(r"\s+", "", line)) <= 24:
+        return True
+    return False
 
 
 def _build_title_search_pages(
@@ -671,11 +772,15 @@ def _is_cover_like_title(text: str) -> bool:
         return True
     if re.search(r"(网络首发论文|出版确认|编辑部|中国学术期刊|排版定稿|录用定稿|光盘版|杂志社)", normalized, re.IGNORECASE):
         return True
+    if re.search(r"^(?:情报理论与实践|information studies|journal|review)\b", normalized, re.IGNORECASE):
+        return True
     if re.fullmatch(r"《[^》]{2,20}》", normalized):
         return True
     if "期刊" in normalized and len(normalized) <= 20:
         return True
     if re.search(r"(作者|author|学院|college|university|email)", normalized, re.IGNORECASE):
+        return True
+    if re.search(r"(@|arxiv|doi|issn)", normalized, re.IGNORECASE):
         return True
     return False
 
@@ -686,13 +791,23 @@ def _is_valid_title_line(text: str) -> bool:
         return False
     if len(normalized) < 6 or len(normalized) > 120:
         return False
+    if TITLE_SECTION_PREFIX_PATTERN.search(normalized):
+        return False
     if re.search(r"^(摘要|abstract|关键词|关键字|keywords?|引言|introduction|作者|author)\s*[:：]?", normalized, re.IGNORECASE):
         return False
+    if re.search(r"[。！？!?；;]", normalized):
+        return False
+    if len(normalized) >= 40 and TITLE_SENTENCE_CUE_PATTERN.search(normalized):
+        return False
     if re.search(r"(基金项目|收稿日期|修回日期|录用日期|通信作者|doi|issn)", normalized, re.IGNORECASE):
+        return False
+    if re.search(r"(@|arxiv)", normalized, re.IGNORECASE):
         return False
     if re.search(r"(学报|期刊|杂志|journal|review).*\d{4}.*第?\d+期", normalized, re.IGNORECASE):
         return False
     if re.fullmatch(r"[\d\s\-—–:：./()]+", normalized):
+        return False
+    if _looks_like_garbled_title_text(normalized):
         return False
     return not _is_cover_like_title(normalized)
 
@@ -705,7 +820,34 @@ def _is_valid_title_candidate(text: str) -> bool:
         return False
     if re.search(r"(作者|author|学院|college|university|email)", normalized, re.IGNORECASE):
         return False
+    if re.search(r"(@|arxiv|doi|issn)", normalized, re.IGNORECASE):
+        return False
     return True
+
+
+def _looks_like_garbled_title_text(text: str) -> bool:
+    normalized = normalize_line(text)
+
+    # Check for Unicode replacement character (U+FFFD)
+    if "\ufffd" in normalized and normalized.count("\ufffd") >= 2:
+        return True
+
+    chinese_chars = re.findall(r"[\u4e00-\u9fff]", normalized)
+    if len(chinese_chars) < 4:
+        return False
+
+    # Repeated single character (e.g., "\u7391\u7391\u7391\u7391\u7391\u7391")
+    if re.search(r"([\u4e00-\u9fff])\1{3,}", normalized):
+        return True
+    # Two-character alternation (e.g., "\u7391\u748b\u7391\u748b\u7391\u748b\u7391\u748b")
+    if re.search(r"([\u4e00-\u9fff])([\u4e00-\u9fff])\1\2\1\2", normalized):
+        return True
+
+    counter = Counter(chinese_chars)
+    total = len(chinese_chars)
+    unique_ratio = len(counter) / total
+    top_three_ratio = sum(count for _, count in counter.most_common(3)) / total
+    return total >= 8 and unique_ratio <= 0.3 and top_three_ratio >= 0.6
 
 
 def _collect_keyword_candidates(
@@ -1010,7 +1152,7 @@ def _looks_like_fragmented_keyword_list(keywords: list[str]) -> bool:
 def _looks_like_section_heading(text: str) -> bool:
     return bool(
         re.search(
-            r"^(?:摘要|摘\s*要|关键词|关键字|〔\s*(?:关键词|关键字)\s*〕|Abstract|Keywords?|引言|绪论|参考文献|第一章|一、|0[.、]?\s*引言|1[.、]?\s*引言|〔\s*(?:中图法分类号|引用本文格式)\s*〕|中图法分类号|引用本文格式)",
+            r"^(?:摘要|摘\s*要|关键词|关键字|〔\s*(?:关键词|关键字)\s*〕|Abstract|Keywords?|引言|绪论|参考文献|第一章|一、|0[.、]?\s*引言|1[.、]?\s*引言|〔\s*(?:中图法分类号|中图分类号|引用本文格式|本文著录格式|著录格式)\s*〕|中图法分类号|中图分类号|引用本文格式|本文著录格式|著录格式)",
             text,
             re.IGNORECASE,
         )
@@ -1061,7 +1203,7 @@ def _looks_like_keyword_stop_line(text: str, *, language: str) -> bool:
     if not normalized:
         return False
     if re.search(
-        r"^(?:〔?\s*(?:中图法分类号|引用本文格式|英文标题|英文题名)\s*〕?|Abstract\b|ABSTRACT\b|Keywords?\b|Key words\b|Index Terms?\b|引言\b|绪论\b|问题提出\b|参考文献\b|一、|第一章|0[.、]?\s*引言|1[.、]?\s*引言)",
+        r"^(?:〔?\s*(?:中图法分类号|中图分类号|引用本文格式|本文著录格式|著录格式|英文标题|英文题名)\s*〕?|Abstract\b|ABSTRACT\b|Keywords?\b|Key words\b|Index Terms?\b|引言\b|绪论\b|问题提出\b|参考文献\b|一、|第一章|0[.、]?\s*引言|1[.、]?\s*引言)",
         normalized,
         re.IGNORECASE,
     ):
@@ -1090,7 +1232,7 @@ def _trim_keyword_block(raw_block: str, *, language: str) -> str:
         if _looks_like_keyword_stop_line(line, language=language):
             break
         line = re.sub(
-            r"\s*(?:〔?\s*(?:中图法分类号|引用本文格式|英文标题|英文题名)\s*〕?|Abstract|ABSTRACT|Keywords?|Key words|Index Terms?|引言|绪论|问题提出|参考文献|一、|第一章|0[.、]?\s*引言|1[.、]?\s*引言).*$",
+            r"\s*(?:〔?\s*(?:中图法分类号|中图分类号|引用本文格式|本文著录格式|著录格式|英文标题|英文题名)\s*〕?|Abstract|ABSTRACT|Keywords?|Key words|Index Terms?|引言|绪论|问题提出|参考文献|一、|第一章|0[.、]?\s*引言|1[.、]?\s*引言).*$",
             "",
             line,
             count=1,
@@ -1103,7 +1245,7 @@ def _trim_keyword_block(raw_block: str, *, language: str) -> str:
     if not collected:
         fallback = normalize_whitespace(text)
         fallback = re.sub(
-            r"\s*(?:〔?\s*(?:中图法分类号|引用本文格式|英文标题|英文题名)\s*〕?|Abstract|ABSTRACT|Keywords?|Key words|Index Terms?|引言|绪论|问题提出|参考文献|一、|第一章|0[.、]?\s*引言|1[.、]?\s*引言).*$",
+            r"\s*(?:〔?\s*(?:中图法分类号|中图分类号|引用本文格式|本文著录格式|著录格式|英文标题|英文题名)\s*〕?|Abstract|ABSTRACT|Keywords?|Key words|Index Terms?|引言|绪论|问题提出|参考文献|一、|第一章|0[.、]?\s*引言|1[.、]?\s*引言).*$",
             "",
             fallback,
             count=1,
@@ -1175,7 +1317,7 @@ def _extract_explicit_keywords(candidate_texts: list[str], *, language: str) -> 
 
 
 _ZH_KEYWORD_PATTERNS = [
-    rf"{_keyword_label_pattern('zh')}\s*[：:]?\s*(.+?)(?=(?:〔?\s*(?:中图法分类号|引用本文格式|英文标题|英文题名)\s*〕?|英文摘要|ABSTRACT|Abstract|abstract|Keywords?|key words|index terms?|引言|绪论|问题提出|参考文献|一、|0[.、]?\s*引言|1[.、]?\s*引言|第一章|$))",
+    rf"{_keyword_label_pattern('zh')}\s*[：:]?\s*(.+?)(?=(?:〔?\s*(?:中图法分类号|中图分类号|引用本文格式|本文著录格式|著录格式|英文标题|英文题名)\s*〕?|英文摘要|ABSTRACT|Abstract|abstract|Keywords?|key words|index terms?|引言|绪论|问题提出|参考文献|一、|0[.、]?\s*引言|1[.、]?\s*引言|第一章|$))",
 ]
 
 _EN_KEYWORD_PATTERNS = [
@@ -1189,7 +1331,7 @@ def _split_keywords_block(raw_block: str, *, language: str) -> list[str]:
     logging.getLogger(__name__).debug("[keyword-debug] raw_block=%r", raw_block)
     cleaned = sanitize_metadata_fragments(_trim_keyword_block(raw_block, language=language))
     cleaned = re.sub(
-        r"(?:引言|绪论|问题提出|一、|0[.、]?\s*引言|1[.、]?\s*引言|第一章|Abstract|ABSTRACT|abstract|references?|中图法分类号|引用本文格式)\s*$",
+        r"(?:引言|绪论|问题提出|一、|0[.、]?\s*引言|1[.、]?\s*引言|第一章|Abstract|ABSTRACT|abstract|references?|中图法分类号|中图分类号|引用本文格式|本文著录格式|著录格式)\s*$",
         "",
         cleaned,
         flags=re.IGNORECASE,

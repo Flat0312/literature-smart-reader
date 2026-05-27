@@ -299,9 +299,7 @@ class PaperResult:
 
 
 def _is_low_quality_structured_text(text: str) -> bool:
-    ascii_count = sum(1 for character in text if character.isascii() and character.isalpha())
-    zh_count = sum(1 for character in text if "\u4e00" <= character <= "\u9fff")
-    if ascii_count > zh_count * 1.3 and ascii_count >= 18:
+    if re.search(r"@|https?://|www\.|\bdoi\b", text, re.IGNORECASE):
         return True
     return text == "暂未识别到高置信度结果。"
 

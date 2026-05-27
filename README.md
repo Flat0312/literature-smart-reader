@@ -1,10 +1,16 @@
+---
+title: 文献智读
+sdk: streamlit
+app_file: app.py
+---
+
 # 文献智读
 
 《文献智读》是一个面向大学生课程写作场景的学习辅助 Web 工具。当前版本基于 `Python + Streamlit` 实现“上传单篇论文 PDF -> 提取关键信息 -> 生成课程写作辅助内容 -> 导出结果”的闭环，重点服务于课程汇报、课程论文前期整理和文献综述基础框架搭建。
 
 ## 当前已实现功能
 
-- 上传单篇 PDF 并提取可复制文本
+- 上传单篇 PDF，先做文本质量预检，再从多种提取策略中选择最可靠结果
 - 识别论文标题、作者、关键词
 - 主摘要优先显示中文摘要；无中文摘要时回退英文摘要
 - 提取研究问题、研究方法、核心结论
@@ -35,6 +41,8 @@
 - 新增同会话内存缓存，重复上传同一文件时直接复用解析结果，跳过 LLM 调用
 - 新增文件大小校验，超过 20 MB 时给出明确提示
 - 调试日志统一改用 `logging` 模块，不再输出到标准输出
+- 新增 PDF 多策略预检：记录提取策略、质量分、扫描版/低文本密度/乱码诊断，并把诊断信息带入调试结果
+- 新增真实论文 PDF corpus 清单和可跳过回归测试，便于持续扩充不同版式样本
 
 ## 项目结构
 
@@ -60,7 +68,10 @@ literature-smart-reader/
 │  ├─ structured_rewrite_service.py
 │  └─ summary_service.py
 ├─ tests/
-│  └─ test_keyword_extraction.py
+│  ├─ test_keyword_extraction.py
+│  ├─ test_pdf_corpus.py
+│  └─ fixtures/
+│     └─ pdf_corpus/
 ├─ utils/
 │  ├─ session.py
 │  └─ text_utils.py
@@ -117,19 +128,21 @@ streamlit run app.py
 
 ## 当前限制
 
-- 当前版本仍以单篇、可复制文本的 PDF 为主，文件大小不超过 20 MB
-- 扫描版 PDF 未集成 OCR，文本过少时可能解析失败
+- 当前版本仍以单篇 PDF 为主，文件大小不超过 20 MB
+- 扫描版 PDF 会被识别为低文本密度或图片型文档；未配置可用 OCR 时会给出明确诊断而不是空白结果
 - 作者、关键词和结构化字段仍受原始版式质量影响，建议结合原文核对
 - 内存缓存仅在同一会话内有效，关闭浏览器后缓存清空
 - 多文献对比、批量处理和数据库持久化暂未纳入当前版本
 
 ## 测试
 
-当前测试位于 `tests/test_keyword_extraction.py`，覆盖：
+当前测试位于 `tests/test_keyword_extraction.py` 和 `tests/test_pdf_corpus.py`，覆盖：
 
 - 关键词显式标记区提取
 - 关键词去重与数量控制
 - 中文摘要优先于英文摘要
+- PDF 预检策略、质量分和短文本诊断
+- 可选真实论文 PDF corpus 回归；本地未下载 PDF 时自动跳过
 - 作者字段进入标准结果
 - 课程写作辅助在信息不足时的稳定 fallback
 

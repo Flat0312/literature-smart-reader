@@ -133,6 +133,7 @@ def mark_file_selected(*, name: str, size: int, signature: str) -> None:
 
 
 def mark_analysis_failed(message: str, parse_feedback: dict[str, object] | None = None) -> None:
+    st.session_state["analysis_result"] = None
     st.session_state["analysis_status"] = ANALYSIS_STATUS_FAILED
     st.session_state["parse_requested"] = False
     st.session_state["error_message"] = message

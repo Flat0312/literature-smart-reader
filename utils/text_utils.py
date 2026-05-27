@@ -162,6 +162,8 @@ def is_noise_line(line: str) -> bool:
     normalized = sanitize_metadata_fragments(line)
     if not normalized:
         return True
+    if looks_like_repeated_garbled_text(normalized):
+        return True
     lowered = normalized.lower()
     preserve_mixed_content = _should_preserve_mixed_content_line(normalized)
 
@@ -177,6 +179,8 @@ def is_noise_line(line: str) -> bool:
 def is_noise_sentence(sentence: str) -> bool:
     normalized = sanitize_metadata_fragments(sentence)
     if not normalized:
+        return True
+    if looks_like_repeated_garbled_text(normalized):
         return True
     lowered = normalized.lower()
 
@@ -208,6 +212,32 @@ def sanitize_metadata_fragments(text: str) -> str:
     sanitized = re.sub(r"\s{2,}", " ", sanitized)
     sanitized = re.sub(r"[，,;；]\s*$", "", sanitized)
     return normalize_line(sanitized)
+
+
+def looks_like_repeated_garbled_text(text: str) -> bool:
+    normalized = normalize_line(text)
+
+    # Check for Unicode replacement character (U+FFFD) \u2014 PyMuPDF inserts this for unmappable glyphs
+    if "\ufffd" in normalized and normalized.count("\ufffd") >= 2:
+        return True
+
+    chinese_chars = re.findall(r"[\u4e00-\u9fff]", normalized)
+    if len(chinese_chars) < 4:
+        return False
+
+    counter = Counter(chinese_chars)
+    total = len(chinese_chars)
+    unique_ratio = len(counter) / total
+    top_three_ratio = sum(count for _, count in counter.most_common(3)) / total
+
+    # Repeated single character (e.g., "\u7391\u7391\u7391\u7391\u7391\u7391")
+    if re.search(r"([\u4e00-\u9fff])\1{3,}", normalized):
+        return True
+    # Two-character alternation (e.g., "\u7391\u748b\u7391\u748b\u7391\u748b\u7391\u748b")
+    if re.search(r"([\u4e00-\u9fff])([\u4e00-\u9fff])\1\2\1\2", normalized):
+        return True
+    # Statistical check: low unique ratio with enough characters
+    return total >= 8 and unique_ratio <= 0.3 and top_three_ratio >= 0.6
 
 
 def _should_preserve_mixed_content_line(text: str) -> bool:

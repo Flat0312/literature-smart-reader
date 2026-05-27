@@ -158,6 +158,13 @@ def collect_structured_candidates(
         )
         candidates[field_name] = candidate
         field_debug[field_name] = debug_item
+    fallback_candidates, fallback_debug = _build_abstract_fallback_candidates(abstract_fallback_text, title=title)
+    for field_name, fallback_candidate in fallback_candidates.items():
+        current_candidate = candidates.get(field_name)
+        if current_candidate and current_candidate.text.strip():
+            continue
+        candidates[field_name] = fallback_candidate
+        field_debug[field_name] = fallback_debug[field_name]
     rule_candidate_char_count = sum(len(candidate.text.strip()) for candidate in candidates.values() if candidate.text.strip())
 
     return build_structured_rewrite_request(
@@ -176,7 +183,10 @@ def collect_structured_candidates(
             "abstract_fallback_available": bool(abstract_fallback_text.strip()),
             "abstract_preview": abstract_preview[:300],
             "keywords_preview": keywords_preview[:200],
-            "candidate_source_strategy": "abstract_only" if abstract_priority_only else "section_fallback",
+            "candidate_source_strategy": _resolve_candidate_source_strategy(
+                abstract_priority_only=abstract_priority_only,
+                fallback_candidates=fallback_candidates,
+            ),
             "rule_candidate_char_count": rule_candidate_char_count,
             "explicit_abstract_labels_found": False,
             "explicit_label_fields": [],
@@ -203,15 +213,19 @@ def _extract_labeled_abstract_candidates(
 
     candidates: dict[str, StructuredFieldCandidate] = {}
     debug: dict[str, object] = {}
+    selected_priorities: dict[str, int] = {}
     for index, match in enumerate(matches):
         field_name = match["field_name"]
-        if field_name in candidates:
+        label = str(match["label"])
+        label_priority = _abstract_label_priority(str(field_name), label)
+        if field_name in candidates and label_priority <= selected_priorities.get(str(field_name), 0):
             continue
         next_start = matches[index + 1]["start"] if index + 1 < len(matches) else len(chinese_abstract)
         raw_value = chinese_abstract[match["end"]:next_start].strip(" ：:；;，,\n")
         candidate_text = _finalize_labeled_abstract_value(raw_value, field_name, title=title)
         if not candidate_text:
             continue
+        selected_priorities[str(field_name)] = label_priority
         candidates[field_name] = StructuredFieldCandidate(
             field_name=field_name,
             text=candidate_text,
@@ -232,11 +246,23 @@ def _extract_labeled_abstract_candidates(
     return candidates, debug
 
 
+def _abstract_label_priority(field_name: str, label: str) -> int:
+    if field_name != "core_conclusion":
+        return 1
+    return {
+        "结果/结论": 4,
+        "结果与结论": 4,
+        "研究结论": 4,
+        "结论": 3,
+        "结果": 1,
+    }.get(label, 2)
+
+
 def _find_abstract_label_matches(text: str) -> list[dict[str, object]]:
     matches: list[dict[str, object]] = []
     for field_name, labels in ABSTRACT_LABEL_GROUPS.items():
         for label in labels:
-            pattern = rf"(?:(?<=^)|(?<=[；;。.!?\n:：]))\s*(?:【|\[|\(|（)?\s*{re.escape(label)}\s*(?:】|\]|\)|）)?\s*[：:]?"
+            pattern = rf"(?:(?<=^)|(?<=[；;。.!?\n:：]))\s*(?:【|〔|\[|［|\(|（)?\s*{re.escape(label)}\s*(?:】|〕|\]|］|\)|）)?\s*[：:]?"
             for match in re.finditer(pattern, text, re.IGNORECASE):
                 matches.append(
                     {
@@ -318,6 +344,107 @@ def _extract_field(
         StructuredFieldCandidate(field_name=field_name, text="", source_kind="empty", source_hint="", score=0.0),
         debug_item,
     )
+
+
+def _build_abstract_fallback_candidates(
+    abstract_text: str,
+    *,
+    title: str = "",
+) -> tuple[dict[str, StructuredFieldCandidate], dict[str, object]]:
+    if not abstract_text.strip():
+        return {}, {}
+
+    sentences = _prepare_fallback_sentences(abstract_text, title=title)
+    if not sentences:
+        return {}, {}
+
+    selectors = {
+        "research_question": _select_question_sentence,
+        "research_method": _select_method_sentence,
+        "core_conclusion": _select_conclusion_sentence,
+    }
+    candidates: dict[str, StructuredFieldCandidate] = {}
+    debug: dict[str, object] = {}
+    for field_name, selector in selectors.items():
+        selected = selector(sentences)
+        if not selected:
+            continue
+        finalized = _finalize_text(selected)
+        if not finalized:
+            continue
+        candidates[field_name] = StructuredFieldCandidate(
+            field_name=field_name,
+            text=finalized,
+            source_kind="abstract_fallback",
+            source_hint="abstract_fallback",
+            score=2.0,
+        )
+        debug[field_name] = {
+            "preferred_sections": ["abstract_fallback"],
+            "selected_candidate": finalized,
+            "selected_source": "abstract_fallback",
+            "selected_score": 2.0,
+            "filtered_out": [],
+            "low_quality_reason": "",
+            "abstract_priority_only": True,
+        }
+    return candidates, debug
+
+
+def _prepare_fallback_sentences(text: str, *, title: str = "") -> list[str]:
+    cleaned = _clean_candidate_text(text)
+    sentences = split_sentences(cleaned)
+    if not sentences and 16 <= len(cleaned) <= 320:
+        sentences = [cleaned]
+    fallback_sentences: list[str] = []
+    for sentence in sentences:
+        normalized = normalize_line(sentence)
+        if not normalized or is_title_like_text(normalized, title):
+            continue
+        if len(normalized) < 16 or len(normalized) > 260:
+            continue
+        if re.search(r"(参考文献|references?|基金项目|项目编号|收稿日期|作者简介|doi|https?://|@)", normalized, re.IGNORECASE):
+            continue
+        fallback_sentences.append(normalized)
+    return fallback_sentences[:8]
+
+
+def _select_question_sentence(sentences: list[str]) -> str:
+    return _first_matching_sentence(
+        sentences,
+        r"(本文|本研究|研究|旨在|目的|针对|围绕|聚焦|关注|探讨|综述|we propose|we present|we introduce|this paper|this work|aims? to)",
+    ) or (sentences[0] if sentences else "")
+
+
+def _select_method_sentence(sentences: list[str]) -> str:
+    return _first_matching_sentence(
+        sentences,
+        r"(采用|通过|基于|利用|运用|构建|文献计量|可视化|CiteSpace|综述|数据|we use|we train|we evaluate|method|model|dataset|corpus|pre-train|pretraining|architecture)",
+    ) or (sentences[1] if len(sentences) > 1 else "")
+
+
+def _select_conclusion_sentence(sentences: list[str]) -> str:
+    return _first_matching_sentence(
+        list(reversed(sentences)),
+        r"(研究发现|研究揭示|结果|表明|显示|取得|推动|趋势|we find|we show|we demonstrate|results? show|achiev|outperform|improve|state-of-the-art)",
+    ) or (sentences[-1] if len(sentences) > 1 else "")
+
+
+def _first_matching_sentence(sentences: list[str], pattern: str) -> str:
+    for sentence in sentences:
+        if re.search(pattern, sentence, re.IGNORECASE):
+            return sentence
+    return ""
+
+
+def _resolve_candidate_source_strategy(
+    *,
+    abstract_priority_only: bool,
+    fallback_candidates: dict[str, StructuredFieldCandidate],
+) -> str:
+    if fallback_candidates:
+        return "abstract_fallback"
+    return "abstract_only" if abstract_priority_only else "section_fallback"
 
 
 def _extract_from_block(
@@ -460,8 +587,8 @@ def _extract_abstract_block(text: str) -> str:
         return ""
 
     patterns = [
-        r"(?:摘\s*要|摘要)\s*[：:]?\s*(.+?)(?=(?:关键词|关键字|英文摘要|Abstract|abstract|引言|绪论|问题提出|研究方法|研究设计|结论|参考文献|一、|1[.、]|第一章|$))",
-        r"(?:abstract)\s*[：:]?\s*(.+?)(?=(?:keywords?|index terms?|introduction|method(?:s|ology)?|conclusion|references|1\.|$))",
+        r"(?:摘\s*要|摘要)\s*[：:]?\s*(.+?)(?=(?:关键词|关键字|英文摘要|Abstract|abstract|引言|绪论|问题提出|研究方法|研究设计|结论|参考文献|第一章|\n\s*(?:一、|1[.、]?\s*)(?:引言|绪论|introduction)|$))",
+        r"(?:abstract)\s*[：:]?\s*(.+?)(?=(?:keywords?|index terms?|introduction|method(?:s|ology)?|conclusion|references|\n\s*1[.]\s*(?:introduction|background|methods?)|$))",
     ]
 
     for pattern in patterns:

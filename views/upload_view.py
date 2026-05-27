@@ -12,7 +12,7 @@ import streamlit as st
 
 logger = logging.getLogger(__name__)
 
-from config.settings import PAGE_HOME, PAGE_RESULT
+from config.settings import ANALYSIS_STATUS_PARSING, PAGE_HOME, PAGE_RESULT
 from services.paper_parse_service import PARSE_STEP_DEFINITIONS, ParsePipelineError, parse_uploaded_pdf
 from utils.session import (
     clear_analysis_result,
@@ -42,10 +42,30 @@ def render_upload_view() -> None:
     st.markdown(
         _html_block(
             """
-            <div class="up-header">
-              <h2 class="up-header__title">上传 PDF 文献</h2>
-              <p class="up-header__sub">上传单篇论文 PDF 后，系统会按阶段完成文本提取、标题/作者/关键词识别、结构化摘要、AI 解读和写作提纲整理。</p>
-            </div>
+            <section class="pf-panel pf-panel--hero">
+              <div class="up-header">
+                <span class="up-header__tag">文献输入区</span>
+                <h2 class="up-header__title">上传 PDF 文献</h2>
+                <p class="up-header__sub">把论文交给解析流水线：先读取文本，再识别元数据，最后生成结构化阅读结果和课程写作素材。</p>
+              </div>
+              <div class="upload-hero-grid">
+                <div class="upload-hero-card">
+                  <span>01</span>
+                  <strong>文本提取</strong>
+                  <p>先读正文，再判断摘要和关键词。</p>
+                </div>
+                <div class="upload-hero-card">
+                  <span>02</span>
+                  <strong>元数据识别</strong>
+                  <p>标题、作者、摘要语言和提示一起整理。</p>
+                </div>
+                <div class="upload-hero-card">
+                  <span>03</span>
+                  <strong>写作输出</strong>
+                  <p>输出适合课程汇报、课程论文和综述。</p>
+                </div>
+              </div>
+            </section>
             """
         ),
         unsafe_allow_html=True,
@@ -54,12 +74,18 @@ def render_upload_view() -> None:
     st.markdown(
         _html_block(
             """
-            <div class="upload-workbench">
+            <section class="pf-panel pf-panel--workbench">
               <div class="upload-workbench__frame">
-                <p class="section-kicker">FILE INPUT</p>
-                <p class="hero-text">上传页现在会显示文件状态、解析阶段、失败原因和部分成功提示。即使作者或部分 AI 模块没有稳定识别，也不会把整次解析误报成完全失败。</p>
+                <p class="section-kicker">📎 FILE INPUT</p>
+                <p class="hero-text">建议上传排版清晰、文字可复制的论文 PDF。解析过程会显示阶段进度、失败原因和部分成功提示，方便你知道卡在哪一步。</p>
+                <div class="upload-micro-grid">
+                  <span>📄 文本提取</span>
+                  <span>🏷️ 元数据识别</span>
+                  <span>🧭 结构化阅读</span>
+                  <span>📝 写作提纲</span>
+                </div>
               </div>
-            </div>
+            </section>
             """
         ),
         unsafe_allow_html=True,
@@ -127,7 +153,7 @@ def render_upload_view() -> None:
 
     action_columns = st.columns([3, 1, 1])
     with action_columns[0]:
-        parse_label = "解析中..." if stage == "processing" else "开始解析"
+        parse_label = "⏳ 解析中..." if stage == "processing" else "🚀 开始解析"
         parse_clicked = st.button(
             parse_label,
             type="primary",
@@ -135,64 +161,51 @@ def render_upload_view() -> None:
             disabled=uploaded_file is None or stage == "processing",
         )
     with action_columns[1]:
-        if st.button("返回首页", use_container_width=True):
+        if st.button("🏠 返回首页", use_container_width=True):
             set_current_page(PAGE_HOME)
             st.rerun()
     with action_columns[2]:
-        if st.button("清除缓存", use_container_width=True):
+        if st.button("🧹 清除缓存", use_container_width=True):
             st.session_state.pop(_RESULT_CACHE_KEY, None)
             st.rerun()
 
     if stage == "error":
         retry_columns = st.columns([2, 1])
         with retry_columns[0]:
-            if st.button("重新选择文件", type="primary", use_container_width=True):
+            if st.button("📎 重新选择文件", type="primary", use_container_width=True):
                 _reset_uploader()
                 st.rerun()
         with retry_columns[1]:
-            if st.button("清除错误提示", use_container_width=True):
+            if st.button("🧽 清除错误提示", use_container_width=True):
                 reset_upload_flow(clear_file=False)
                 st.session_state[UPLOAD_STATUS_KEY] = "idle"
                 st.rerun()
 
     if parse_clicked and uploaded_file is not None and stage != "processing":
+        validation_errors: list[str] = []
         if not uploaded_file.name.lower().endswith(".pdf"):
-            feedback = _build_terminal_feedback(
-                status="failed",
-                errors=["文件类型不支持，请上传 PDF。"],
-                category="pdf_read_failed",
-                error_stage="pdf_read",
-            )
-            set_parse_feedback(feedback)
-            mark_analysis_failed("文件类型不支持，请上传 PDF。", feedback)
-            st.session_state[UPLOAD_STATUS_KEY] = "error"
-            st.rerun()
-        if not uploaded_file.getvalue():
-            feedback = _build_terminal_feedback(
-                status="failed",
-                errors=["文件为空或无法读取，请重新上传。"],
-                category="pdf_read_failed",
-                error_stage="pdf_read",
-            )
-            set_parse_feedback(feedback)
-            mark_analysis_failed("文件为空或无法读取，请重新上传。", feedback)
-            st.session_state[UPLOAD_STATUS_KEY] = "error"
-            st.rerun()
+            validation_errors.append("文件类型不支持，请上传 PDF。")
+        file_bytes = uploaded_file.getvalue()
+        if not file_bytes:
+            validation_errors.append("文件为空或无法读取，请重新上传。")
         if uploaded_file.size > 20 * 1024 * 1024:
+            validation_errors.append("文件超过 20 MB，请压缩后重新上传。")
+        if validation_errors:
             feedback = _build_terminal_feedback(
                 status="failed",
-                errors=["文件超过 20 MB，请压缩后重新上传。"],
+                errors=validation_errors,
                 category="pdf_read_failed",
                 error_stage="pdf_read",
             )
             set_parse_feedback(feedback)
-            mark_analysis_failed("文件超过 20 MB，请压缩后重新上传。", feedback)
+            mark_analysis_failed(validation_errors[0], feedback)
             st.session_state[UPLOAD_STATUS_KEY] = "error"
             st.rerun()
+        st.session_state["_upload_file_bytes"] = file_bytes
 
         st.session_state[UPLOAD_STATUS_KEY] = "processing"
         st.session_state[UPLOAD_PENDING_SIGNATURE_KEY] = file_signature
-        set_analysis_status("parsing")
+        set_analysis_status(ANALYSIS_STATUS_PARSING)
         set_error_message("")
         clear_parse_feedback()
         st.rerun()
@@ -201,7 +214,7 @@ def render_upload_view() -> None:
         _html_block(
             """
             <p class="up-hint">
-              上传状态会区分：文件已选择、待解析、处理中、解析完成、部分成功和解析失败。扫描版 PDF 或文本极少的文档仍可能在“文本提取”阶段失败。
+              💡 上传状态会区分：文件已选择、待解析、处理中、解析完成、部分成功和解析失败。扫描版 PDF 或文本极少的文档仍可能在“文本提取”阶段失败。
             </p>
             """
         ),
@@ -210,6 +223,7 @@ def render_upload_view() -> None:
 
 
 _RESULT_CACHE_KEY = "upload_v3_result_cache"
+_RESULT_CACHE_MAX = 3
 
 
 def _handle_analysis(uploaded_file, file_signature: str) -> None:
@@ -248,9 +262,11 @@ def _handle_analysis(uploaded_file, file_signature: str) -> None:
             summary_placeholder.empty()
 
     try:
-        result = parse_uploaded_pdf(uploaded_file.name, uploaded_file.getvalue(), progress_callback=on_progress)
+        file_bytes = st.session_state.pop("_upload_file_bytes", None) or uploaded_file.getvalue()
+        result = parse_uploaded_pdf(uploaded_file.name, file_bytes, progress_callback=on_progress)
         logger.debug("[structured-debug] %s", json.dumps(result.structured_debug, ensure_ascii=False, indent=2))
     except ParsePipelineError as exc:
+        st.session_state.pop("_upload_file_bytes", None)
         feedback = exc.parse_feedback or get_parse_feedback()
         set_parse_feedback(feedback)
         mark_analysis_failed(exc.user_message, feedback)
@@ -259,7 +275,9 @@ def _handle_analysis(uploaded_file, file_signature: str) -> None:
         st.session_state["upload_v3_last_error"] = exc.user_message
         st.rerun()
     except Exception as exc:  # pragma: no cover - unexpected runtime branch
-        message = f"解析过程出现错误：{exc}"
+        st.session_state.pop("_upload_file_bytes", None)
+        logger.error("Unexpected parse error: %s", exc, exc_info=True)
+        message = "解析过程出现意外错误，请重试或更换文件。"
         feedback = _build_terminal_feedback(
             status="failed",
             errors=[message],
@@ -273,6 +291,10 @@ def _handle_analysis(uploaded_file, file_signature: str) -> None:
         st.session_state["upload_v3_last_error"] = message
         st.rerun()
 
+    # Evict oldest cache entries if over limit
+    while len(cache) >= _RESULT_CACHE_MAX:
+        oldest_key = next(iter(cache))
+        cache.pop(oldest_key, None)
     cache[file_signature] = result
     mark_analysis_succeeded(result)
     st.session_state[UPLOAD_STATUS_KEY] = "success"
@@ -321,6 +343,7 @@ def _get_stage(uploaded_file, file_signature: str) -> str:
 
 def _reset_uploader() -> None:
     reset_upload_flow(clear_file=True)
+    clear_analysis_result()
     clear_parse_feedback()
     st.session_state[UPLOAD_STATUS_KEY] = "idle"
     st.session_state.pop(UPLOAD_PENDING_SIGNATURE_KEY, None)
@@ -332,7 +355,7 @@ def _build_file_chip_html(uploaded_file, stage: str) -> str:
         return _html_block(
             """
             <div class="upload-file-chip">
-              <strong>尚未选择文件</strong>
+              <strong>📭 尚未选择文件</strong>
               <span>请先上传一篇论文 PDF，再点击“开始解析”。</span>
               <em>等待用户上传文件</em>
             </div>
@@ -349,7 +372,7 @@ def _build_file_chip_html(uploaded_file, stage: str) -> str:
     return _html_block(
         f"""
         <div class="upload-file-chip upload-file-chip--active">
-          <strong>已选择文件</strong>
+          <strong>📌 已选择文件</strong>
           <span>{escape(uploaded_file.name)}</span>
           <em>{size_kb:.1f} KB · {status_text}</em>
         </div>
@@ -396,9 +419,9 @@ def _build_stage_panel_html(feedback: dict[str, object]) -> str:
     meta_text = " · ".join(meta_parts) if meta_parts else "当前正在执行解析流程。"
     return _html_block(
         f"""
-        <div class="upload-stage-panel">
-          <div class="upload-stage-panel__head">
-            <strong>解析阶段进度</strong>
+            <div class="upload-stage-panel">
+              <div class="upload-stage-panel__head">
+            <strong>🧭 解析阶段进度</strong>
             <span>{escape(str(feedback.get("status", "running")))}</span>
           </div>
           <div class="upload-stage-panel__body">
@@ -440,9 +463,9 @@ def _build_feedback_summary_html(feedback: dict[str, object]) -> str:
 
 def _build_status_card_html(*, title: str, body: str, modifier: str) -> str:
     icon = {
-        "ready": "✓",
+        "ready": "✅",
         "processing": "⏳",
-        "error": "!",
+        "error": "⚠️",
     }.get(modifier, "•")
     role = "alert" if modifier == "error" else "status"
     aria_label = {"ready": "成功", "processing": "处理中", "error": "错误"}.get(modifier, "")
@@ -506,7 +529,7 @@ def _build_terminal_feedback(
             step["status"] = "failed"
             step["detail"] = errors[0]
             break
-        step["status"] = "completed" if step["id"] != "completed" else "pending"
+        step["status"] = "completed"
         step["detail"] = "已完成。"
     return feedback
 

@@ -18,15 +18,16 @@ from utils.text_utils import (
     normalize_whitespace,
     reflow_text_for_display,
     sanitize_metadata_fragments,
+    looks_like_repeated_garbled_text,
     split_sentences,
 )
 
 _ZH_ABSTRACT_PATTERNS = [
-    r"(?:(?<=^)|(?<=[\n。；;]))(?:〔\s*摘\s*要\s*〕|〔\s*摘要\s*〕|\[\s*摘\s*要\s*\]|\[\s*摘要\s*\]|摘\s*要|(?<!英文)(?<!英 文)摘要)\s*[：:]?\s*(.+?)(?=(?:\s*(?:关键词|关键字)|英文摘要|ABSTRACT|Abstract|abstract|引言|绪论|一、|1[.、]|第一章|$))",
+    r"(?:(?<=^)|(?<=[\n。；;]))(?:〔\s*摘\s*要\s*〕|〔\s*摘要\s*〕|\[\s*摘\s*要\s*\]|\[\s*摘要\s*\]|摘\s*要|(?<!英文)(?<!英 文)摘要)\s*[：:]?\s*(.+?)(?=(?:\s*(?:关键词|关键字)|英文摘要|ABSTRACT|Abstract|abstract|引言|绪论|第一章|\n\s*(?:一、|1[.、]?\s*)(?:引言|绪论|introduction)|$))",
 ]
 
 _EN_ABSTRACT_PATTERNS = [
-    r"(?:(?<=^)|(?<=[\n。；;]))(?:英文摘要|abstract)\s*[：:]?\s*(.+?)(?=(?:keywords?|index terms?|引言|introduction|一、|1\.|第一章|references?|$))",
+    r"(?:(?<=^)|(?<=[\n。；;]))(?:英文摘要|abstract)\s*[：:]?\s*(.+?)(?=(?:keywords?|index terms?|引言|introduction|第一章|references?|\n\s*1[.]\s*(?:introduction|background|methods?)|$))",
 ]
 
 _ABSTRACT_INLINE_NOISE_PATTERNS = [
@@ -44,7 +45,8 @@ _ABSTRACT_INLINE_NOISE_PATTERNS = [
 
 _ABSTRACT_STOP_PATTERNS = [
     r"^(?:关键词|关键字|英文摘要|ABSTRACT|Abstract|abstract)\b",
-    r"^\s*(?:引言|绪论|一、|1[.、]|第一章|参考文献|references?)",
+    r"^\s*(?:引言|绪论|第一章|参考文献|references?)",
+    r"^\s*(?:一、|1[.、]?\s*)(?:引言|绪论|introduction)\b",
 ]
 
 
@@ -176,7 +178,11 @@ def _is_abstract_noise_line(line: str) -> bool:
     lowered = line.lower()
     if is_noise_line(line):
         return True
+    if looks_like_repeated_garbled_text(line):
+        return True
     if any(keyword in lowered for keyword in ("本文系", "项目编号", "网络首发", "作者单位", "作者简介", "通信作者")):
+        return True
+    if re.search(r"(基金|国家自然科学基金|研究生科研|实践创新计划|成果之一|课题|资助)", line):
         return True
     if re.fullmatch(r"\*?\s*[A-Za-z]{1,8}\d{3,}[A-Za-z0-9-]*\s*", line):
         return True

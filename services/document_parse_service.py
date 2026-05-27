@@ -143,7 +143,7 @@ def _extract_structured_result(
         precleaned.body_text,
         title=title_result.title or "",
         priority_text=precleaned.priority_text,
-        chinese_abstract=structure_blocks.abstract_zh,
+        chinese_abstract=structure_blocks.abstract_zh or structure_blocks.abstract_en or "",
     )
     llm_debug = {"env": get_relay_env_status()}
     explicit_abstract_labels_found = bool(structured_request.debug_info.get("explicit_abstract_labels_found", False))
@@ -285,7 +285,7 @@ def _is_header_footer_candidate(line: str) -> bool:
         return True
     if re.search(r"(学报|期刊|杂志|journal|review)", line, re.IGNORECASE) and not re.search(r"[。！？!?；;]", line):
         return True
-    if len(line) <= 32 and not re.search(r"[。！？!?；;]", line):
+    if len(line) <= 32 and not re.search(r"[。！？!?；;]", line) and re.search(r"(?:第?\s*\d+\s*页|\d+\s*/\s*\d+)", line):
         return True
     return False
 

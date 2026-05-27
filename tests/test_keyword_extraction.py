@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import fitz
+
 from models.paper_result import AUTHORS_DISPLAY_FALLBACK, NormalizedPaperParseResult, PaperResult
 from services.llm_service import CourseSupportRequest, generate_course_support_material
 from services.document_parse_service import parse_pdf_document
@@ -12,11 +14,15 @@ from services.metadata_service import (
     _extract_strategy_a_blocks,
     _extract_strategy_b_blocks,
     _extract_strategy_c_blocks,
+    _is_valid_title_candidate,
     extract_authors_with_source,
     extract_keywords_with_source,
 )
 from services.paper_parse_service import ParsePipelineError, build_paper_result, parse_uploaded_pdf
-from services.pdf_service import PdfExtractionResult, PdfPageDebug
+from services.pdf_service import PdfExtractionResult, PdfPageDebug, extract_pdf_context
+from services.structure_service import collect_structured_candidates
+from services.structured_rewrite_service import rewrite_structured_fields
+from services.summary_service import extract_abstracts
 
 
 class KeywordExtractionTests(unittest.TestCase):
@@ -43,6 +49,17 @@ class KeywordExtractionTests(unittest.TestCase):
             pages=[page],
             body_start_page_index=0,
         )
+
+    def build_text_pdf_bytes(self, text: str) -> bytes:
+        document = fitz.open()
+        page = document.new_page()
+        y = 72
+        for line in text.splitlines():
+            page.insert_text((72, y), line, fontsize=11)
+            y += 18
+        pdf_bytes = document.tobytes()
+        document.close()
+        return pdf_bytes
 
     def test_strategy_a_structure_block(self) -> None:
         text = (
@@ -195,6 +212,230 @@ class KeywordExtractionTests(unittest.TestCase):
 
         self.assertEqual(standard["authors"], ["张三", "李四"])
         self.assertEqual(pipeline.normalized_result.authors_text(), "张三、李四")
+
+    def test_rejects_repeated_garbled_title_candidate(self) -> None:
+        garbled_title = "欟" * 36 + " " + "榄" * 24
+
+        self.assertFalse(_is_valid_title_candidate(garbled_title))
+
+    def test_pipeline_uses_file_name_when_pdf_title_is_garbled(self) -> None:
+        garbled_title = "欟" * 36 + " " + "榄" * 24
+        page = PdfPageDebug(
+            page_index=0,
+            text=(
+                f"{garbled_title}\n"
+                "摘要：本文讨论人工智能研究前沿识别与领域演化分析。\n"
+                "关键词：人工智能；研究前沿；领域演化；文献分析\n"
+                "1 引言\n"
+            ),
+            preview="sample",
+            page_score=8.0,
+            body_keywords_hit=["摘要", "关键词", "引言"],
+            cover_keywords_hit=[],
+            blocks=[],
+        )
+        pdf_result = PdfExtractionResult(
+            raw_text=page.text,
+            body_text=page.text,
+            pages=[page],
+            body_start_page_index=0,
+        )
+
+        with self.without_relay():
+            result = build_paper_result("人工智能研究前沿识别与分析_基于领域全局演化研究视角_王日芬.pdf", pdf_result)
+
+        self.assertNotIn("欟", result.title)
+        self.assertIn("人工智能研究前沿识别与分析", result.title)
+        self.assertIn("已使用文件名作为标题", " ".join(result.warning_items()))
+
+    def test_pipeline_uses_cnki_file_name_when_extracted_title_is_body_fragment(self) -> None:
+        body_fragment_title = "域， Small ， Garfield ， Persson 等知名学者陆续从不同角度研究和阐释它的内涵，形成了研究前沿是新兴主题 、 正"
+        page = PdfPageDebug(
+            page_index=0,
+            text=(
+                f"{body_fragment_title}\n"
+                "摘要：本文讨论人工智能研究前沿识别与领域演化分析。\n"
+                "关键词：人工智能；研究前沿；领域演化；文献分析\n"
+                "1 引言\n"
+            ),
+            preview="sample",
+            page_score=8.0,
+            body_keywords_hit=["摘要", "关键词", "引言"],
+            cover_keywords_hit=[],
+            blocks=[],
+        )
+        pdf_result = PdfExtractionResult(
+            raw_text=page.text,
+            body_text=page.text,
+            pages=[page],
+            body_start_page_index=0,
+        )
+
+        with self.without_relay():
+            result = build_paper_result("人工智能研究前沿识别与分析_基于领域全局演化研究视角_王曰芬.pdf", pdf_result)
+
+        self.assertEqual(result.title, "人工智能研究前沿识别与分析 基于领域全局演化研究视角")
+        self.assertNotIn("王曰芬", result.title)
+        self.assertIn("文件名中的论文标题", " ".join(result.warning_items()))
+
+    def test_pipeline_uses_title_before_split_abstract_and_removes_garbled_summary(self) -> None:
+        garbled_line = "欟" * 46
+        page = PdfPageDebug(
+            page_index=0,
+            text=(
+                f"{garbled_line}\n"
+                "专题序: 多元研究视角下人工智能研究前沿识别与分析\n"
+                "研究前沿的概念是1965 年由De S. Price 在“Science”上发表的论文中提出来的。\n"
+                "王曰芬\n"
+                "●王曰芬\n"
+                "1，2，曹嘉君\n"
+                "( 1. 南京理工大学经济管理学院，江苏 南京 210094)\n"
+                "人工智能研究前沿识别与分析: 基于领域全局演化研究视角\n"
+                "*\n"
+                "摘\n"
+                "要: ［目的/意义］在人工智能持续快速发展的背景下，借助于数据分析进行人工智能领域突变术语的识别。\n"
+                "［方法/过程］以WoS 核心合集为数据源，利用突变检测算法识别出突变术语。\n"
+                "［结果/结论］移动设备、能源消耗以及标准测试数据等研\n"
+                "*\n"
+                "本文为国家自然科学基金应急管理项目“人工智能领域研究前沿探测与决策支持”(项目编号: 61842602)\n"
+                "和江苏省研究生科研与\n"
+                "实践创新计划项目“基于数据科学的专家在线知识创新平台构建研究”(项目编号: KYCX18_0344)\n"
+                "的成果之一。\n"
+                f"{garbled_line}\n"
+                "究发展得较快。［局限］主题术语可能存在分词误差，需追踪到实际文献中的主题词进行修正。\n"
+                "关键词: 人工智能; 研究前沿; 突变检测; 突变术语; 前沿演进\n"
+                "1 引言\n"
+            ),
+            preview="sample",
+            page_score=10.0,
+            body_keywords_hit=["摘要", "关键词", "引言"],
+            cover_keywords_hit=[],
+            blocks=[],
+        )
+        pdf_result = PdfExtractionResult(
+            raw_text=page.text,
+            body_text=page.text,
+            pages=[page],
+            body_start_page_index=0,
+        )
+
+        with self.without_relay():
+            result = build_paper_result("人工智能研究前沿识别与分析_基于领域全局演化研究视角_王曰芬.pdf", pdf_result)
+
+        self.assertEqual(result.title, "人工智能研究前沿识别与分析: 基于领域全局演化研究视角")
+        self.assertIn("研究发展得较快", result.summary_text())
+        self.assertNotIn("专题序", result.title)
+        self.assertFalse(any(char in result.summary_text() for char in "欟檪殏"))
+        self.assertNotIn("项目编号", result.summary_text())
+        self.assertNotIn("成果之一", result.summary_text())
+
+    def test_structured_fields_extract_fullwidth_labeled_abstract(self) -> None:
+        abstract = (
+            "［目的/意义］在人工智能持续快速发展的背景下，借助于数据分析进行人工智能领域突变术语的识别，"
+            "揭示人工智能领域的研究前沿及其态势的演变状况，以为科学研究与政策制定提供数据支撑和决策参考。"
+            "［方法/过程］在对研究前沿综述的基础上，以WoS 核心合集为数据源，采集与处理人工智能研究的文献数据，"
+            "利用突变检测算法识别出突变术语，从整体内容、突变持续区间、突变初始年限以及突变时间和词频相结合的角度"
+            "进行研究前沿的识别与具体演进分析。"
+            "［结果/结论］人工智能研究前沿由理论研究向技术方法和算法研究演变，整体上处于持续稳定的发展状态中; "
+            "在学习模型和算法上出现新的发展思路，以智能应用为目标; 同时，移动设备、能源消耗以及标准测试数据等研究发展得较快。"
+            "［局限］主题术语可能存在分词误差，需追踪到实际文献中的主题词进行修正。"
+        )
+
+        request = collect_structured_candidates(
+            abstract,
+            title="人工智能研究前沿识别与分析: 基于领域全局演化研究视角",
+            chinese_abstract=abstract,
+        )
+        result = rewrite_structured_fields(request)
+
+        self.assertTrue(request.debug_info["explicit_abstract_labels_found"])
+        self.assertEqual(request.debug_info["candidate_source_strategy"], "cn_abstract_labels")
+        self.assertIn("人工智能领域突变术语", result.research_question)
+        self.assertIn("WoS 核心合集", result.research_method)
+        self.assertIn("突变检测算法", result.research_method)
+        self.assertIn("理论研究向技术方法和算法研究演变", result.core_conclusion)
+        self.assertNotIn("局限", result.core_conclusion)
+
+    def test_abstract_extraction_does_not_stop_inside_tongyi_punctuation(self) -> None:
+        text = (
+            "摘要:针对当前我国用水权改革认识不统一、改革面临诸多困难和障碍的现实局面,基于科斯三大\n"
+            "定理,深入审视和剖析我国用水权初始分配确权、市场化交易、收储再配置“三部曲”式改革演变的\n"
+            "理论逻辑,总结我国用水权制度演进的实践经验、理论依据与改革方向。研究发现:我国用水权改\n"
+            "革的阶段性特征与科斯三大定理具有高度吻合性,初始分配确权、市场化交易和收储再配置是我国\n"
+            "用水权制度和政策构成的三大核心,尤其是收储再配置机制具有“政府+市场”双重属性和“两手发\n"
+            "力”特点,对活跃用水权市场和矫正初始分配结果具有重要的现实贡献。基于此,提出我国规范推\n"
+            "进用水权改革、活跃用水权交易市场的相关政策建议。\n"
+            "关键词:科斯三大定理;用水权交易;收储再配置;用水权制度演进\n"
+        )
+
+        abstract = extract_abstracts(text).chinese_abstract
+        request = collect_structured_candidates(
+            text,
+            title="科斯理论视角下我国用水权制度演进与改革方向",
+            chinese_abstract=abstract,
+        )
+        result = rewrite_structured_fields(request)
+
+        self.assertIn("改革面临诸多困难和障碍", abstract)
+        self.assertIn("政策建议", abstract)
+        self.assertIn("当前我国用水权改革", result.research_question)
+        self.assertIn("基于科斯三大", result.research_method)
+        self.assertIn("收储再配置机制", result.core_conclusion)
+
+    def test_abstract_extraction_keeps_decimal_or_values_and_prefers_conclusion_label(self) -> None:
+        text = (
+            "摘要：目的\n"
+            "采用多因素Logistic 回归与随机森林模型分析中小学生近视的影响因素并对比两种模型结果，为近视防控提供多维度科学依据。方法\n"
+            "于2019—2024 年，采用分层整群抽样方法，抽取北京市某区小学四年级至高中三年级共10 666名学生开展视力检查与问卷调查。结果\n"
+            "Logistic 回归分析结果显示，高学段（初中OR=3.973，95%CI：3.519~4.484；高中OR=6.028，\n"
+            "95%CI：5.299~6.858）、父母近视（OR=2.561，95%CI：2.318~2.830）、女生（OR=1.710，95%CI：1.554~1.882）、\n"
+            "课间休息地点在教室内（OR=\n"
+            "1.164，95%CI：1.041~1.303）是近视的显著危险因素。结论\n"
+            "Logistic 回归模型识别出6 种危险因素，随机森林模型识别出5 种重要因素，两种模型均将学段、父母近视、做作业时间过长、父母提醒读写姿势4 种因素列为近视最突出的影响因素。\n"
+            "关键词：随机森林模型；学生；近视；影响因素；多因素\n"
+        )
+
+        abstract = extract_abstracts(text).chinese_abstract
+        request = collect_structured_candidates(
+            text,
+            title="中小学生近视影响因素的Logistic回归与随机森林模型对比研究",
+            chinese_abstract=abstract,
+        )
+        result = rewrite_structured_fields(request)
+
+        self.assertIn("1.164，95%CI", abstract)
+        self.assertIn("两种模型均将学段", abstract)
+        self.assertNotIn("OR=", result.core_conclusion)
+        self.assertIn("随机森林模型识别出5 种重要因素", result.core_conclusion)
+
+    def test_pdf_preflight_records_strategy_and_quality(self) -> None:
+        pdf_bytes = self.build_text_pdf_bytes(
+            "A Study on Literature Reading Support for Course Writing\n"
+            "Alice Chen, Bob Li\n"
+            "Abstract: This paper focuses on single-paper reading in course writing scenarios. "
+            "It uses text analysis to organize the parsing workflow and discusses how structured reading "
+            "support can improve classroom presentation preparation efficiency.\n"
+            "Keywords: course writing; literature reading; text analysis; classroom presentation\n"
+            "1 Introduction\n"
+            "Course writing requires stable extraction of title, authors, abstract, keywords and methods, "
+            "so the parser should evaluate PDF text quality before selecting the most reliable strategy.\n"
+        )
+
+        result = extract_pdf_context(pdf_bytes)
+
+        self.assertIn(result.preflight.extraction_strategy, {"pymupdf_text", "pymupdf_blocks"})
+        self.assertGreater(result.preflight.quality_score, 0)
+        self.assertFalse(result.preflight.is_probably_scanned)
+        self.assertTrue(result.extraction_attempts_debug)
+        self.assertIn("Literature Reading Support", result.body_text)
+
+    def test_pdf_preflight_reports_short_or_non_text_pdf(self) -> None:
+        pdf_bytes = self.build_text_pdf_bytes("short")
+
+        with self.assertRaises(ValueError) as context:
+            extract_pdf_context(pdf_bytes)
+
+        self.assertRegex(str(context.exception), r"(文本过少|没有提取到可用文本)")
 
     def test_extract_authors_from_title_zone_with_institution(self) -> None:
         text = (

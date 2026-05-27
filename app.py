@@ -12,6 +12,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Load Streamlit secrets into env vars (for cloud deployment)
@@ -19,8 +20,8 @@ try:
     for _k, _v in st.secrets.items():
         if _k not in os.environ:
             os.environ[_k] = str(_v)
-except Exception:
-    pass
+except Exception as exc:
+    logger.warning("Failed to load Streamlit secrets: %s", exc)
 
 from config.settings import APP_ICON, APP_SUBTITLE, APP_TITLE, PAGE_HOME, PAGE_ORDER, PAGE_RESULT, PAGE_UPLOAD
 from utils.session import get_current_page, init_session_state
@@ -37,16 +38,16 @@ def load_global_styles() -> None:
 
 def render_navigation(current_page: str) -> None:
     page_labels = {
-        PAGE_HOME: "1 首页",
-        PAGE_UPLOAD: "2 上传解析",
-        PAGE_RESULT: "3 结果展示",
+        PAGE_HOME: "01 首页",
+        PAGE_UPLOAD: "02 上传",
+        PAGE_RESULT: "03 结果",
     }
     items = []
     for page_name in PAGE_ORDER:
         active_class = "active" if page_name == current_page else ""
         aria_current = ' aria-current="page"' if page_name == current_page else ''
-        items.append(f'<span class="nav-step {active_class}"{aria_current}>{page_labels[page_name]}</span>')
-    st.markdown(f'<nav aria-label="步骤导航" class="nav-shell">{"".join(items)}</nav>', unsafe_allow_html=True)
+        items.append(f'<span class="pf-nav__item {active_class}"{aria_current}>{page_labels[page_name]}</span>')
+    st.markdown(f'<nav aria-label="步骤导航" class="pf-nav">{"".join(items)}</nav>', unsafe_allow_html=True)
 
 
 def main() -> None:
@@ -63,19 +64,19 @@ def main() -> None:
     st.markdown(
         _html_block(
             f"""
-        <section class="app-shell app-glass-shell">
-            <div class="app-shell__brand">
-                <div class="app-shell__icon">{APP_ICON}</div>
-                <div>
-                    <p class="app-shell__eyebrow">LITERATURE SMART READER</p>
+        <section class="pf-topbar">
+            <div class="pf-topbar__brand">
+                <div class="pf-topbar__icon">{APP_ICON}</div>
+                <div class="pf-topbar__copy">
+                    <p class="pf-topbar__eyebrow">LITERATURE SMART READER</p>
                     <h1>{APP_TITLE}</h1>
-                    <p class="app-shell__subtitle">{APP_SUBTITLE}</p>
+                    <p class="pf-topbar__subtitle">{APP_SUBTITLE}</p>
                 </div>
             </div>
-            <div class="app-shell__meta">
-                <span class="app-shell__badge">课程写作场景</span>
-                <span class="app-shell__badge">单篇 PDF 解析</span>
-                <span class="app-shell__badge">结构化阅读辅助</span>
+            <div class="pf-topbar__meta">
+                <span class="pf-topbar__badge">课程写作场景</span>
+                <span class="pf-topbar__badge">单篇 PDF 解析</span>
+                <span class="pf-topbar__badge">结构化阅读辅助</span>
             </div>
         </section>
         """

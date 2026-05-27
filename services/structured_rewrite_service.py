@@ -7,6 +7,7 @@ current implementation stays fully local and rule based.
 from __future__ import annotations
 
 from difflib import SequenceMatcher
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Callable
@@ -107,13 +108,10 @@ def rewrite_structured_fields(
         try:
             rewritten_result = rewriter(request)
         except Exception:
+            logging.getLogger(__name__).warning("Injected rewriter failed, falling back to local rules", exc_info=True)
             rewritten_result = None
         if rewritten_result is not None:
             return _finalize_result(rewritten_result, request)
-
-    if request.preferred_backend != "local_rule":
-        # Future LLM backends can be plugged in through `rewriter`.
-        pass
 
     rewritten: dict[str, str] = {}
     for field_name in _FIELD_SENTENCE_LIMITS:
@@ -183,8 +181,6 @@ def finalize_structured_field_text(field_name: str, text: str, title: str = "") 
 
     text = filter_title_like_sentences(text, title)
     text = sanitize_metadata_fragments(text)
-    if _is_english_heavy_text(text):
-        return ""
     text = _strip_noise_markers(text)
     text = _strip_leading_labels(text)
     text = _normalize_spacing(text)
@@ -320,13 +316,11 @@ def _is_readable_sentence(sentence: str) -> bool:
     cleaned = _normalize_spacing(_strip_noise_markers(sentence))
     if len(cleaned) < 16:
         return False
-    if len(cleaned) > 130:
+    if len(cleaned) > 220:
         return False
     if re.search(r"https?://|www\.|doi", cleaned, re.IGNORECASE):
         return False
     if re.search(r"(参考文献|references?|基金项目|项目编号|收稿日期|作者简介)", cleaned, re.IGNORECASE):
-        return False
-    if _is_english_heavy_text(cleaned):
         return False
     return True
 
@@ -358,8 +352,6 @@ def _estimate_local_confidence(rewritten: dict[str, str]) -> str:
     populated_count = sum(1 for value in rewritten.values() if value)
     if populated_count >= 3:
         return "中"
-    if populated_count >= 1:
-        return "低"
     return "低"
 
 

@@ -136,7 +136,6 @@ def get_relay_env_status() -> dict[str, object]:
         "has_relay_base_url": bool(os.getenv("RELAY_BASE_URL", "").strip()),
         "has_relay_model": bool(os.getenv("RELAY_MODEL", "").strip()),
         "relay_model": os.getenv("RELAY_MODEL", "").strip(),
-        "relay_base_url": os.getenv("RELAY_BASE_URL", "").strip(),
     }
 
 
