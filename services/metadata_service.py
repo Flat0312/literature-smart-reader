@@ -1373,9 +1373,6 @@ def _extract_frequency_keywords(raw_text: str, title: str) -> list[str]:
     for phrase, frequency in chinese_counter.most_common(12):
         if frequency < 2:
             continue
-        if phrase in title:
-            candidates.append(phrase)
-            continue
         candidates.append(phrase)
 
     return compact_list(candidates, MAX_KEYWORDS)

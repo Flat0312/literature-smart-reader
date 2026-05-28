@@ -46,44 +46,7 @@ def render_upload_view() -> None:
               <div class="up-header">
                 <span class="up-header__tag">文献输入区</span>
                 <h2 class="up-header__title">上传 PDF 文献</h2>
-                <p class="up-header__sub">把论文交给解析流水线：先读取文本，再识别元数据，最后生成结构化阅读结果和课程写作素材。</p>
-              </div>
-              <div class="upload-hero-grid">
-                <div class="upload-hero-card">
-                  <span>01</span>
-                  <strong>文本提取</strong>
-                  <p>先读正文，再判断摘要和关键词。</p>
-                </div>
-                <div class="upload-hero-card">
-                  <span>02</span>
-                  <strong>元数据识别</strong>
-                  <p>标题、作者、摘要语言和提示一起整理。</p>
-                </div>
-                <div class="upload-hero-card">
-                  <span>03</span>
-                  <strong>写作输出</strong>
-                  <p>输出适合课程汇报、课程论文和综述。</p>
-                </div>
-              </div>
-            </section>
-            """
-        ),
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        _html_block(
-            """
-            <section class="pf-panel pf-panel--workbench">
-              <div class="upload-workbench__frame">
-                <p class="section-kicker">📎 FILE INPUT</p>
-                <p class="hero-text">建议上传排版清晰、文字可复制的论文 PDF。解析过程会显示阶段进度、失败原因和部分成功提示，方便你知道卡在哪一步。</p>
-                <div class="upload-micro-grid">
-                  <span>📄 文本提取</span>
-                  <span>🏷️ 元数据识别</span>
-                  <span>🧭 结构化阅读</span>
-                  <span>📝 写作提纲</span>
-                </div>
+                <p class="up-header__sub">上传论文 PDF，系统自动完成 <span class="hl-coral">文本提取</span> → <span class="hl-blue">元数据识别</span> → <span class="hl-purple">写作输出</span>，解析过程会显示阶段进度和失败提示。</p>
               </div>
             </section>
             """
@@ -242,18 +205,15 @@ def _handle_analysis(uploaded_file, file_signature: str) -> None:
     clear_parse_feedback()
     set_error_message("")
 
-    progress_bar = st.progress(2)
     stage_placeholder = st.empty()
     summary_placeholder = st.empty()
 
     initial_feedback = _build_running_feedback()
     set_parse_feedback(initial_feedback)
-    progress_bar.progress(_progress_from_feedback(initial_feedback))
     stage_placeholder.markdown(_build_stage_panel_html(initial_feedback), unsafe_allow_html=True)
 
     def on_progress(feedback: dict[str, object]) -> None:
         set_parse_feedback(feedback)
-        progress_bar.progress(_progress_from_feedback(feedback))
         stage_placeholder.markdown(_build_stage_panel_html(feedback), unsafe_allow_html=True)
         summary_html = _build_feedback_summary_html(feedback)
         if summary_html:

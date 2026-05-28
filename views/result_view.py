@@ -115,13 +115,14 @@ def _build_result_sections(result) -> tuple[str, str, str, str]:
     authors = result.filtered_authors()
     parse_hints = _build_parse_hints(result, result.warning_items())
 
+    _chip_colors = ["chip-indigo", "chip-coral", "chip-blue", "chip-gold", "chip-green", "chip-purple"]
     keyword_display = (
-        "".join(f'<span class="kw-chip">{escape(keyword)}</span>' for keyword in keywords)
+        "".join(f'<span class="kw-chip {_chip_colors[i % len(_chip_colors)]}">{escape(keyword)}</span>' for i, keyword in enumerate(keywords))
         if keywords
         else f'<span class="kw-chip kw-chip--empty">{KEYWORDS_DISPLAY_FALLBACK}</span>'
     )
     authors_display = (
-        "".join(f'<span class="author-chip">{escape(author)}</span>' for author in authors)
+        "".join(f'<span class="author-chip {_chip_colors[i % len(_chip_colors)]}">{escape(author)}</span>' for i, author in enumerate(authors))
         if authors
         else f'<span class="author-chip author-chip--empty">{AUTHORS_DISPLAY_FALLBACK}</span>'
     )
@@ -142,78 +143,47 @@ def _build_result_sections(result) -> tuple[str, str, str, str]:
 
     hero_html = _html_block(
         f"""
-        <section class="pf-panel pf-result-hero">
+        <section class="pf-result-hero">
           <div class="rs-hero">
-            <div class="rs-hero__inner">
-              <div class="rs-hero__title-block">
-                <p class="rs-hero__label">论文解析结果</p>
-                <span class="rs-badge rs-badge--accent">{escape(parse_status_label)}</span>
-                <h1 class="rs-hero__title">{title_text}</h1>
-                <p class="rs-hero__file">{file_name_text}</p>
-                <p class="rs-hero__file">主阅读内容在中间主列，右侧为按需切换的课程写作输出区。</p>
-              </div>
-              <div class="rs-hero__stats">
-                <div class="rs-stat">
-                  <span class="rs-stat__value">{backend_label}</span>
-                  <span class="rs-stat__label">解析方式</span>
-                </div>
-                <div class="rs-stat">
-                  <span class="rs-stat__value">{keywords_count}</span>
-                  <span class="rs-stat__label">关键词</span>
-                </div>
-                <div class="rs-stat">
-                  <span class="rs-stat__value">{structured_ready} / 3</span>
-                  <span class="rs-stat__label">结构化字段</span>
-                </div>
-                <div class="rs-stat">
-                  <span class="rs-stat__value">3 类</span>
-                  <span class="rs-stat__label">写作输出</span>
-                </div>
-              </div>
+            <p class="rs-hero__label">论文解析结果</p>
+            <h1 class="rs-hero__title">{title_text}</h1>
+            <p class="rs-hero__file">{file_name_text}</p>
+            <div class="rs-hero__meta">
+              <span class="rs-badge chip-coral">{escape(parse_status_label)}</span>
+              <span class="rs-badge chip-blue">{backend_label}</span>
+              <span class="rs-badge chip-green">{structured_ready}/3 字段</span>
+              <span class="rs-badge chip-purple">{keywords_count} 关键词</span>
             </div>
           </div>
         </section>
         """
     )
 
+    _field_accent = {"研究问题": "hl-coral", "研究方法": "hl-blue", "核心结论": "hl-green"}
     struct_cards_html = ""
     for _, label, content, _ in structured_cards:
+        accent = _field_accent.get(label, "hl-indigo")
         struct_cards_html += f"""
-<div class="rs-structured-item">
-  <h3 class="rs-structured-item__title">{_field_icon(label)} {escape(label)}</h3>
-  <p class="rs-structured-item__body">{_fmt_multiline(content)}</p>
+<div class="rs-structured-row">
+  <h3 class="rs-structured-row__title"><span class="{accent}">{_field_icon(label)} {escape(label)}</span></h3>
+  <p class="rs-structured-row__body">{_fmt_multiline(content)}</p>
 </div>"""
 
     left_html = _html_block(
         f"""
         <div class="rs-side-stack">
           <div class="rs-side-card pf-panel--meta">
-            <h3 class="rs-side-card__title">基础信息</h3>
+            <h3 class="rs-side-card__title">文献信息</h3>
             <div class="rs-info-list">
               <div class="rs-info-row">
                 <span class="rs-info-row__label">文件名</span>
                 <span class="rs-info-row__value">{file_name_text}</span>
               </div>
               <div class="rs-info-row">
-                <span class="rs-info-row__label">识别标题</span>
-                <span class="rs-info-row__value">{title_text}</span>
-              </div>
-              <div class="rs-info-row">
-                <span class="rs-info-row__label">解析状态</span>
-                <span class="rs-info-row__value">{escape(parse_status_label)}</span>
-              </div>
-              <div class="rs-info-row">
-                <span class="rs-info-row__label">主摘要语言</span>
+                <span class="rs-info-row__label">摘要语言</span>
                 <span class="rs-info-row__value">{escape(summary_language)}</span>
               </div>
-              <div class="rs-info-row">
-                <span class="rs-info-row__label">解析方式</span>
-                <span class="rs-info-row__value">{backend_label}</span>
-              </div>
             </div>
-          </div>
-          <div class="rs-side-card rs-side-card--soft pf-panel--meta">
-            <h3 class="rs-side-card__title">作者、关键词与提示</h3>
             <div class="rs-label-stack">
               <span class="rs-mini-label">作者</span>
               <div class="rs-chip-cloud">{authors_display}</div>
@@ -234,58 +204,45 @@ def _build_result_sections(result) -> tuple[str, str, str, str]:
     center_html = _html_block(
         f"""
         <div class="rs-main-stack">
-          <section class="rs-main-module rs-main-module--summary pf-panel--main">
+          <section class="rs-main-module rs-main-module--summary pf-panel--main topbar-coral">
             <div class="rs-section__head">
               <h2 class="rs-section__title">主摘要</h2>
-              <span class="rs-badge">{escape(summary_language)}</span>
+              <span class="rs-badge chip-coral">{escape(summary_language)}</span>
             </div>
             <div class="rs-summary-box rs-summary-box--main">
               <p class="rs-body-text rs-body-text--lead">{summary_text}</p>
             </div>
           </section>
 
-          <section class="rs-main-module pf-panel--main">
+          <section class="rs-main-module pf-panel--main topbar-blue">
             <div class="rs-section__head">
               <h2 class="rs-section__title">结构化提取</h2>
-              <span class="rs-badge rs-badge--accent">{structured_ready} / 3 字段</span>
+              <span class="rs-badge chip-blue">{structured_ready}/3</span>
             </div>
-            <p class="rs-section__sub">{escape(notice)}</p>
-            <div class="rs-structured-grid">
+            <div class="rs-structured-list">
               {struct_cards_html}
             </div>
           </section>
 
-          <section class="rs-main-module pf-panel--main">
+          <section class="rs-main-module pf-panel--main topbar-purple">
             <div class="rs-section__head">
-              <h2 class="rs-section__title">AI 解读</h2>
-              <span class="rs-badge rs-badge--accent">课程写作辅助</span>
+              <h2 class="rs-section__title">AI 解读与评价</h2>
             </div>
-            <div class="rs-reading-grid">
-              <div class="rs-reading-card">
-                <h3 class="rs-reading-card__title">通俗摘要</h3>
-                <p class="rs-body-text">{_fmt_multiline(result.plain_language_summary_text())}</p>
-              </div>
-              <div class="rs-reading-card">
-                <h3 class="rs-reading-card__title">研究方法说明</h3>
-                <p class="rs-body-text">{_fmt_multiline(result.method_explanation_text())}</p>
-              </div>
+            <div class="rs-reading-card">
+              <h3 class="rs-reading-card__title">通俗摘要</h3>
+              <p class="rs-body-text">{_fmt_multiline(result.plain_language_summary_text())}</p>
             </div>
-          </section>
-
-          <section class="rs-main-module pf-panel--main">
-            <div class="rs-section__head">
-              <h2 class="rs-section__title">创新与不足</h2>
-              <span class="rs-badge">适合课程展示</span>
+            <div class="rs-reading-card">
+              <h3 class="rs-reading-card__title">研究方法说明</h3>
+              <p class="rs-body-text">{_fmt_multiline(result.method_explanation_text())}</p>
             </div>
-            <div class="rs-reading-grid">
-              <div class="rs-reading-card">
-                <h3 class="rs-reading-card__title">创新点分析</h3>
-                <div class="rs-list-shell">{_fmt_list_html(result.innovation_items(), empty_text="当前未能提取稳定创新点。")}</div>
-              </div>
-              <div class="rs-reading-card">
-                <h3 class="rs-reading-card__title">不足分析</h3>
-                <div class="rs-list-shell">{_fmt_list_html(result.limitation_items(), empty_text="当前未能提取稳定不足分析。")}</div>
-              </div>
+            <div class="rs-reading-card">
+              <h3 class="rs-reading-card__title">创新点</h3>
+              <div class="rs-list-shell">{_fmt_list_html(result.innovation_items(), empty_text="当前未能提取稳定创新点。")}</div>
+            </div>
+            <div class="rs-reading-card">
+              <h3 class="rs-reading-card__title">不足之处</h3>
+              <div class="rs-list-shell">{_fmt_list_html(result.limitation_items(), empty_text="当前未能提取稳定不足分析。")}</div>
             </div>
           </section>
         </div>

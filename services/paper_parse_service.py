@@ -23,12 +23,14 @@ from services.llm_service import (
     fallback_keywords_with_llm,
     generate_course_support_material,
     get_relay_env_status,
+    recognize_metadata_with_llm,
     rewrite_structured_result,
 )
 from services.metadata_service import (
     AuthorExtractionResult,
     KeywordExtractionResult,
     TitleExtractionResult,
+    _looks_like_author_name,
     extract_authors_with_source,
     extract_keywords_with_source,
     extract_title_with_source,
@@ -330,10 +332,73 @@ def build_paper_result(
             parse_feedback=parse_feedback,
         ) from exc
 
-    tracker.set_timing("metadata_extract_ms", metadata_started_at)
     metadata_detail = "已完成标题、作者和关键词识别。"
     if not structure_blocks.authors:
         metadata_detail = "标题和关键词已识别，作者仍未稳定识别。"
+
+    metadata_recognition_debug: dict[str, object] = {}
+    ai_metadata_supplemented: list[str] = []
+    try:
+        recognition_result = recognize_metadata_with_llm(
+            title=title,
+            authors=structure_blocks.authors,
+            authors_confidence=structure_blocks.authors_confidence,
+            keywords=keyword_result.keywords,
+            keyword_source_kind=keyword_result.source_kind,
+            abstract_zh=structure_blocks.abstract_zh,
+            abstract_en=structure_blocks.abstract_en,
+            front_text=text_bundle.front_text,
+        )
+        metadata_recognition_debug = recognition_result.debug_info
+        ai_metadata_supplemented = list(recognition_result.fields_supplemented)
+
+        if recognition_result.fields_supplemented:
+            if "title" in recognition_result.fields_supplemented:
+                title = recognition_result.title
+            if "authors" in recognition_result.fields_supplemented:
+                structure_blocks.authors = recognition_result.authors
+                structure_blocks.authors_source = "llm_metadata_recognition"
+                structure_blocks.authors_confidence = "low"
+            if "keywords" in recognition_result.fields_supplemented:
+                keyword_result = KeywordExtractionResult(
+                    keywords=recognition_result.keywords,
+                    source_language="zh",
+                    source_kind="llm_metadata_recognition",
+                    raw_block="；".join(recognition_result.keywords),
+                    confidence="低",
+                    warnings=_dedupe_items([
+                        *keyword_result.warnings,
+                        "规则关键词未识别，已由 AI 元数据识别补充。",
+                    ]),
+                    debug_info={
+                        **keyword_result.debug_info,
+                        "metadata_recognition": recognition_result.debug_info,
+                    },
+                )
+            if "abstract_zh" in recognition_result.fields_supplemented:
+                structure_blocks.abstract_zh = recognition_result.abstract_zh
+            if "abstract_en" in recognition_result.fields_supplemented:
+                structure_blocks.abstract_en = recognition_result.abstract_en
+
+            supplemented_labels = {
+                "title": "标题",
+                "authors": "作者",
+                "keywords": "关键词",
+                "abstract_zh": "中文摘要",
+                "abstract_en": "英文摘要",
+            }
+            supplemented_names = [
+                supplemented_labels.get(f, f)
+                for f in recognition_result.fields_supplemented
+            ]
+            metadata_detail = f"AI 已补充识别：{'、'.join(supplemented_names)}。"
+    except Exception as exc:
+        metadata_recognition_debug = {"error": str(exc), "used_llm": False}
+
+    tracker.set_timing("metadata_extract_ms", metadata_started_at)
+    if not structure_blocks.authors:
+        if ai_metadata_supplemented:
+            metadata_detail = f"{metadata_detail} 作者仍未稳定识别。"
         tracker.partial("metadata_extract", metadata_detail)
     else:
         tracker.complete("metadata_extract", metadata_detail)
@@ -403,6 +468,7 @@ def build_paper_result(
         structured_note=structured_result.note,
         explicit_abstract_labels_found=bool(structured_request.debug_info.get("explicit_abstract_labels_found", False)),
         llm_supplemented_fields=list(structured_result.debug_info.get("supplemented_fields", [])),
+        ai_metadata_supplemented=ai_metadata_supplemented,
     )
 
     tracker.start("ai_interpretation", "正在生成通俗摘要和方法说明。")
@@ -457,6 +523,7 @@ def build_paper_result(
             *([title_fallback_warning] if title_fallback_warning else []),
             *course_support_warnings,
         ],
+        ai_metadata_supplemented=ai_metadata_supplemented,
     )
     parsed_result.parse_warnings = parse_warnings
 
@@ -499,6 +566,7 @@ def build_paper_result(
             "note": course_support_result.note,
             **course_support_result.debug_info,
         },
+        "metadata_recognition_debug": metadata_recognition_debug,
     }
 
     parse_status = "partial_success" if parse_warnings else "success"
@@ -780,6 +848,7 @@ def _build_parse_warnings(
     explicit_abstract_labels_found: bool,
     course_support_result,
     extra_warnings: list[str] | None = None,
+    ai_metadata_supplemented: list[str] | None = None,
 ) -> list[str]:
     warnings = list(structure_blocks.parse_warnings)
     if not structure_blocks.authors:
@@ -801,6 +870,17 @@ def _build_parse_warnings(
     warnings.extend(keyword_result.warnings)
     if keyword_result.debug_info.get("low_confidence"):
         warnings.append("关键词提取置信度较低。")
+
+    if ai_metadata_supplemented:
+        field_labels = {
+            "title": "标题",
+            "authors": "作者",
+            "keywords": "关键词",
+            "abstract_zh": "中文摘要",
+            "abstract_en": "英文摘要",
+        }
+        supplemented_names = [field_labels.get(f, f) for f in ai_metadata_supplemented]
+        warnings.append(f"以下字段由 AI 补充识别：{'、'.join(supplemented_names)}，建议结合原文核对。")
 
     supplemented_fields = structured_result.debug_info.get("supplemented_fields", [])
     if supplemented_fields and not explicit_abstract_labels_found:
@@ -929,8 +1009,6 @@ def _stabilize_keyword_result(
     )
 
 
-
-
 def _extract_english_title(text: str) -> str:
     lines = [normalize_line(line) for line in text.splitlines() if normalize_line(line)]
     for index, line in enumerate(lines):
@@ -987,25 +1065,17 @@ def _split_author_line(text: str) -> list[str]:
     return authors or [normalized]
 
 
-def _looks_like_author_name(text: str) -> bool:
-    if len(text) < 2 or len(text) > 20:
-        return False
-    if re.search(r"(大学|学院|研究院|研究所|department|university|college|institute)", text, re.IGNORECASE):
-        return False
-    if re.search(r"[。！？；;:：]", text):
-        return False
-    return bool(re.fullmatch(r"[\u4e00-\u9fffA-Za-z·•]{2,20}", text))
-
-
 def _split_compact_chinese_author_names(text: str) -> list[str]:
     if len(text) == 4:
         return [text[:2], text[2:]]
     if len(text) == 5:
+        # 2+3 covers compound-surname names (e.g. 欧阳小明 → 欧阳/小明)
         return [text[:2], text[2:]]
     if len(text) == 6:
         return [text[:3], text[3:]]
     if len(text) == 7:
-        return [text[:3], text[3:]]
+        # 4+3 for compound-surname + standard name (e.g. 欧阳小明张三丰 → 欧阳小明/张三丰)
+        return [text[:4], text[4:]]
     return []
 
 

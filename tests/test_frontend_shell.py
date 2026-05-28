@@ -15,12 +15,12 @@ from views.result_view import _build_result_sections
 class _DummyResult:
     structured_notice = "当前结果仅供辅助参考。"
     structured_debug = {"final_result": {"backend": "relay_precheck"}, "summary_debug": {"keyword_source": "strategy_a_explicit_zh"}}
-    parse_status = "success"
+    parse_status = "partial_success"
     title = "测试论文标题"
     file_name = "demo-paper.pdf"
 
     def warning_items(self) -> list[str]:
-        return []
+        return ["以下字段由 AI 补充识别：作者，建议结合原文核对。"]
 
     def filtered_keywords(self) -> list[str]:
         return ["关键词A", "关键词B"]
@@ -73,19 +73,20 @@ class FrontendShellTests(unittest.TestCase):
     def test_home_hero_uses_editorial_shell_classes(self) -> None:
         hero_html = _build_home_hero_html()
         self.assertIn("pf-home-hero", hero_html)
-        self.assertIn("pf-highlight", hero_html)
-        self.assertIn("pf-hero-visual", hero_html)
-        self.assertIn("pf-map-board", hero_html)
-        self.assertIn("pf-map-document", hero_html)
-        self.assertIn("pf-map-output", hero_html)
+        self.assertIn("home-hero__visual", hero_html)
+        self.assertIn("demo-card", hero_html)
+        self.assertIn("demo-pdf", hero_html)
+        self.assertIn("demo-output", hero_html)
         self.assertNotIn("home-flow", hero_html)
 
-    def test_result_sections_use_editorial_card_classes(self) -> None:
+    def test_result_sections_use_current_card_classes_and_parse_hints(self) -> None:
         hero_html, left_html, center_html, right_intro_html = _build_result_sections(_DummyResult())
 
         self.assertIn("pf-result-hero", hero_html)
-        self.assertIn("rs-hero__stats", hero_html)
+        self.assertIn("rs-hero__meta", hero_html)
         self.assertIn("pf-panel--meta", left_html)
+        self.assertIn("rs-label-stack--tips", left_html)
+        self.assertIn("AI 补充识别", left_html)
         self.assertIn("pf-panel--main", center_html)
         self.assertIn("pf-panel--rail", right_intro_html)
 

@@ -72,6 +72,17 @@ class AuthorFallbackPayload(BaseModel):
     note: str = Field(description="简短说明是否基于首页前部文本识别到作者。")
 
 
+class MetadataRecognitionPayload(BaseModel):
+    """Unified metadata recognition payload for title/authors/keywords/abstract fallback."""
+
+    title: str = Field(description="论文标题，无法识别时返回空字符串。")
+    authors: list[str] = Field(description="作者名单；不确定时返回空数组。")
+    keywords: list[str] = Field(description="3 到 8 个贴近原文的中文关键词。")
+    abstract_zh: str = Field(description="中文摘要原文；无中文摘要时返回空字符串。")
+    abstract_en: str = Field(description="英文摘要原文；无英文摘要时返回空字符串。")
+    note: str = Field(description="简短说明各字段识别依据或不确定性。")
+
+
 class CourseSupportPayload(BaseModel):
     """Structured course-writing support payload returned by the relay backend."""
 
@@ -100,6 +111,18 @@ class AuthorFallbackResult:
     source_kind: str = ""
     confidence: str = ""
     note: str = ""
+    debug_info: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class MetadataRecognitionResult:
+    title: str = ""
+    authors: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
+    abstract_zh: str = ""
+    abstract_en: str = ""
+    note: str = ""
+    fields_supplemented: list[str] = field(default_factory=list)
     debug_info: dict[str, object] = field(default_factory=dict)
 
 
@@ -332,6 +355,305 @@ def fallback_authors_with_llm(
         note="作者 LLM 兜底失败。",
         debug_info=debug_info,
     )
+
+
+def recognize_metadata_with_llm(
+    *,
+    title: str,
+    authors: list[str],
+    authors_confidence: str,
+    keywords: list[str],
+    keyword_source_kind: str,
+    abstract_zh: str,
+    abstract_en: str,
+    front_text: str,
+) -> MetadataRecognitionResult:
+    debug_info: dict[str, object] = {
+        "env": get_relay_env_status(),
+        "front_text_length": len(front_text or ""),
+        "current_title": title,
+        "current_authors": list(authors),
+        "current_authors_confidence": authors_confidence,
+        "current_keywords": list(keywords),
+        "current_keyword_source_kind": keyword_source_kind,
+        "has_abstract_zh": bool((abstract_zh or "").strip()),
+        "has_abstract_en": bool((abstract_en or "").strip()),
+        "used_llm": False,
+        "attempted_path": [],
+        "raw_response_text": "",
+    }
+
+    title_needs = not title or title == "未识别标题"
+    authors_needs = not authors or authors_confidence == "none"
+    keywords_needs = not keywords or keyword_source_kind == "frequency_fallback"
+    abstract_needs = not (abstract_zh or "").strip() and not (abstract_en or "").strip()
+
+    if not (title_needs or authors_needs or keywords_needs or abstract_needs):
+        debug_info["skip_reason"] = "all_fields_populated"
+        return MetadataRecognitionResult(
+            title=title,
+            authors=list(authors),
+            keywords=list(keywords),
+            abstract_zh=abstract_zh or "",
+            abstract_en=abstract_en or "",
+            note="所有元数据字段已由规则提取完成，无需 AI 识别。",
+            debug_info=debug_info,
+        )
+
+    if len(normalize_whitespace(front_text or "")) < 40:
+        debug_info["skip_reason"] = "front_text_too_short"
+        return MetadataRecognitionResult(
+            title=title,
+            authors=list(authors),
+            keywords=list(keywords),
+            abstract_zh=abstract_zh or "",
+            abstract_en=abstract_en or "",
+            note="首页前部文本不足，未触发 AI 元数据识别。",
+            debug_info=debug_info,
+        )
+
+    try:
+        settings = _load_relay_settings()
+    except RelayConfigError as exc:
+        debug_info["skip_reason"] = "relay_config_missing"
+        debug_info["error"] = str(exc)
+        return MetadataRecognitionResult(
+            title=title,
+            authors=list(authors),
+            keywords=list(keywords),
+            abstract_zh=abstract_zh or "",
+            abstract_en=abstract_en or "",
+            note=str(exc),
+            debug_info=debug_info,
+        )
+
+    client = OpenAI(
+        api_key=settings.api_key,
+        base_url=settings.base_url,
+        timeout=STRUCTURED_LLM_TIMEOUT_SECONDS,
+    )
+
+    responses_error: Exception | None = None
+    try:
+        debug_info["attempted_path"].append("responses")
+        payload, raw_output = _metadata_recognition_with_responses(client, settings, front_text=front_text)
+        debug_info["raw_response_text"] = raw_output
+        result = _merge_metadata_recognition(
+            payload,
+            current_title=title,
+            current_authors=authors,
+            current_authors_confidence=authors_confidence,
+            current_keywords=keywords,
+            current_keyword_source_kind=keyword_source_kind,
+            current_abstract_zh=abstract_zh or "",
+            current_abstract_en=abstract_en or "",
+        )
+        debug_info["used_llm"] = True
+        debug_info["fields_supplemented"] = result.fields_supplemented
+        result.debug_info = dict(debug_info)
+        return result
+    except Exception as exc:
+        responses_error = exc
+        debug_info["responses_error"] = str(exc)
+
+    try:
+        debug_info["attempted_path"].append("chat.completions")
+        payload, raw_output = _metadata_recognition_with_chat(client, settings, front_text=front_text)
+        debug_info["raw_response_text"] = raw_output
+        result = _merge_metadata_recognition(
+            payload,
+            current_title=title,
+            current_authors=authors,
+            current_authors_confidence=authors_confidence,
+            current_keywords=keywords,
+            current_keyword_source_kind=keyword_source_kind,
+            current_abstract_zh=abstract_zh or "",
+            current_abstract_en=abstract_en or "",
+        )
+        debug_info["used_llm"] = True
+        debug_info["fields_supplemented"] = result.fields_supplemented
+        result.debug_info = dict(debug_info)
+        return result
+    except Exception as exc:
+        debug_info["chat_error"] = str(exc)
+        if responses_error is not None:
+            debug_info["error"] = "AI 元数据识别失败。"
+
+    return MetadataRecognitionResult(
+        title=title,
+        authors=list(authors),
+        keywords=list(keywords),
+        abstract_zh=abstract_zh or "",
+        abstract_en=abstract_en or "",
+        note="AI 元数据识别未成功，保留规则提取结果。",
+        debug_info=debug_info,
+    )
+
+
+def _merge_metadata_recognition(
+    payload: MetadataRecognitionPayload,
+    *,
+    current_title: str,
+    current_authors: list[str],
+    current_authors_confidence: str,
+    current_keywords: list[str],
+    current_keyword_source_kind: str,
+    current_abstract_zh: str,
+    current_abstract_en: str,
+) -> MetadataRecognitionResult:
+    supplemented: list[str] = []
+
+    llm_title = _sanitize_recognized_title(payload.title)
+    title_needs = not current_title or current_title == "未识别标题"
+    final_title = current_title
+    if title_needs and llm_title:
+        final_title = llm_title
+        supplemented.append("title")
+
+    llm_authors = _sanitize_author_payload(list(payload.authors))
+    authors_needs = not current_authors or current_authors_confidence == "none"
+    final_authors = list(current_authors)
+    if authors_needs and llm_authors:
+        final_authors = llm_authors
+        supplemented.append("authors")
+
+    llm_keywords = _sanitize_keyword_payload(list(payload.keywords))
+    keywords_needs = not current_keywords or current_keyword_source_kind == "frequency_fallback"
+    final_keywords = list(current_keywords)
+    if keywords_needs and llm_keywords:
+        final_keywords = llm_keywords
+        supplemented.append("keywords")
+
+    llm_abstract_zh = _sanitize_recognized_abstract(payload.abstract_zh)
+    llm_abstract_en = _sanitize_recognized_abstract(payload.abstract_en)
+    final_abstract_zh = current_abstract_zh
+    final_abstract_en = current_abstract_en
+    if not current_abstract_zh and not current_abstract_en:
+        if llm_abstract_zh:
+            final_abstract_zh = llm_abstract_zh
+            supplemented.append("abstract_zh")
+        if llm_abstract_en:
+            final_abstract_en = llm_abstract_en
+            supplemented.append("abstract_en")
+
+    note = (payload.note or "").strip()
+    if not note:
+        if supplemented:
+            note = f"AI 已补充识别：{'、'.join(supplemented)}。"
+        else:
+            note = "AI 识别未产生新内容，保留规则结果。"
+
+    return MetadataRecognitionResult(
+        title=final_title,
+        authors=final_authors,
+        keywords=final_keywords,
+        abstract_zh=final_abstract_zh,
+        abstract_en=final_abstract_en,
+        note=note,
+        fields_supplemented=supplemented,
+        debug_info={},
+    )
+
+
+def _sanitize_recognized_title(title: str) -> str:
+    cleaned = normalize_line(title or "").strip()
+    if not cleaned:
+        return ""
+    if cleaned in ("未识别标题", "Untitled", "untitled"):
+        return ""
+    if len(cleaned) > 200:
+        return ""
+    return cleaned
+
+
+def _sanitize_recognized_abstract(abstract: str) -> str:
+    cleaned = normalize_whitespace(abstract or "").strip()
+    if len(cleaned) < 20:
+        return ""
+    return cleaned
+
+
+def _build_metadata_recognition_system_prompt() -> str:
+    return (
+        "你是学术论文元数据识别助手。请仅依据提供的论文首页前部文本，识别以下四个字段：标题、作者、关键词、摘要。"
+        "不要猜测，不要补充外部事实。"
+        "标题：只返回论文的正式标题，不含机构、期刊名等。无法识别时返回空字符串。"
+        "作者：只返回明确出现的作者姓名，不要包含机构、邮箱。无法识别时返回空数组。"
+        "关键词：返回论文中明确标注的关键词，3 到 8 个。无显式关键词时返回空数组，不要从摘要中推测。"
+        "摘要：返回中文摘要或英文摘要的原文，不要改写或概括。无摘要时返回空字符串。"
+        "输出 JSON 字段固定为 title、authors、keywords、abstract_zh、abstract_en、note。"
+    )
+
+
+def _build_metadata_recognition_input(*, front_text: str) -> str:
+    return "\n".join([
+        "以下是论文首页前部文本，请从中识别标题、作者、关键词和摘要：",
+        front_text[:2000],
+    ])
+
+
+def _metadata_recognition_with_responses(
+    client: OpenAI,
+    settings: RelaySettings,
+    *,
+    front_text: str,
+) -> tuple[MetadataRecognitionPayload, str]:
+    response = client.responses.parse(
+        model=settings.model,
+        instructions=_build_metadata_recognition_system_prompt(),
+        input=_build_metadata_recognition_input(front_text=front_text),
+        text_format=MetadataRecognitionPayload,
+        temperature=0.1,
+        max_output_tokens=400,
+        verbosity="low",
+        store=False,
+    )
+    payload = response.output_parsed
+    raw_output = getattr(response, "output_text", "")
+    if payload is None and raw_output:
+        payload = _parse_metadata_recognition_payload_from_text(raw_output)
+    if payload is None:
+        raise ValueError("AI 元数据识别未返回可解析结果。")
+    return payload, raw_output
+
+
+def _metadata_recognition_with_chat(
+    client: OpenAI,
+    settings: RelaySettings,
+    *,
+    front_text: str,
+) -> tuple[MetadataRecognitionPayload, str]:
+    completion = client.chat.completions.create(
+        model=settings.model,
+        messages=[
+            {"role": "system", "content": _build_metadata_recognition_system_prompt()},
+            {"role": "user", "content": _build_metadata_recognition_input(front_text=front_text)},
+        ],
+        temperature=0.1,
+        max_tokens=400,
+        response_format={"type": "json_object"},
+    )
+    raw_output = _extract_chat_content(completion)
+    payload = _parse_metadata_recognition_payload_from_text(raw_output)
+    if payload is None:
+        raise ValueError("AI 元数据识别未返回可解析 JSON。")
+    return payload, raw_output
+
+
+def _parse_metadata_recognition_payload_from_text(text: str) -> MetadataRecognitionPayload | None:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    try:
+        return MetadataRecognitionPayload.model_validate_json(cleaned)
+    except ValidationError:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if not match:
+            return None
+        try:
+            return MetadataRecognitionPayload.model_validate_json(match.group(0))
+        except ValidationError:
+            return None
 
 
 def generate_course_support_material(request: CourseSupportRequest) -> CourseSupportResult:

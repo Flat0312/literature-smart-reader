@@ -8,7 +8,14 @@ from unittest.mock import patch
 import fitz
 
 from models.paper_result import AUTHORS_DISPLAY_FALLBACK, NormalizedPaperParseResult, PaperResult
-from services.llm_service import CourseSupportRequest, generate_course_support_material
+from services.llm_service import (
+    CourseSupportRequest,
+    MetadataRecognitionPayload,
+    MetadataRecognitionResult,
+    RelaySettings,
+    generate_course_support_material,
+    recognize_metadata_with_llm,
+)
 from services.document_parse_service import parse_pdf_document
 from services.metadata_service import (
     _extract_strategy_a_blocks,
@@ -18,7 +25,7 @@ from services.metadata_service import (
     extract_authors_with_source,
     extract_keywords_with_source,
 )
-from services.paper_parse_service import ParsePipelineError, build_paper_result, parse_uploaded_pdf
+from services.paper_parse_service import ParsePipelineError, ParseRuntimeTracker, build_paper_result, parse_uploaded_pdf
 from services.pdf_service import PdfExtractionResult, PdfPageDebug, extract_pdf_context
 from services.structure_service import collect_structured_candidates
 from services.structured_rewrite_service import rewrite_structured_fields
@@ -550,6 +557,61 @@ class KeywordExtractionTests(unittest.TestCase):
         self.assertEqual(result.parse_status, "partial_success")
         self.assertIn("本次解析未稳定识别作者。", result.warning_items())
         self.assertEqual(result.authors_text(), AUTHORS_DISPLAY_FALLBACK)
+
+    def test_metadata_recognition_success_keeps_debug_info(self) -> None:
+        payload = MetadataRecognitionPayload(
+            title="AI 补充标题",
+            authors=["张三"],
+            keywords=[],
+            abstract_zh="",
+            abstract_en="",
+            note="基于首页识别作者。",
+        )
+
+        with patch("services.llm_service._load_relay_settings", return_value=RelaySettings("key", "https://relay.test", "model")):
+            with patch("services.llm_service.OpenAI"):
+                with patch("services.llm_service._metadata_recognition_with_responses", return_value=(payload, '{"authors":["张三"]}')):
+                    result = recognize_metadata_with_llm(
+                        title="课程写作辅助中的文献解读研究",
+                        authors=[],
+                        authors_confidence="none",
+                        keywords=["课程写作"],
+                        keyword_source_kind="strategy_a_explicit_zh",
+                        abstract_zh="摘要原文",
+                        abstract_en="",
+                        front_text="课程写作辅助中的文献解读研究\n张三\n摘要：摘要原文，本文关注课堂报告写作场景下的文献解读流程。\n关键词：课程写作",
+                    )
+
+        self.assertEqual(result.fields_supplemented, ["authors"])
+        self.assertTrue(result.debug_info.get("used_llm"))
+        self.assertEqual(result.debug_info.get("attempted_path"), ["responses"])
+        self.assertIn("raw_response_text", result.debug_info)
+
+    def test_metadata_extract_stays_running_during_ai_metadata_recognition(self) -> None:
+        pdf_result = self.build_pdf_result(
+            "课程写作辅助中的文献解读研究\n"
+            "摘要：本文关注课程写作场景下的单篇论文整理。\n"
+            "关键词：课程写作；文献解读；文本分析；课堂展示\n"
+            "1 引言\n"
+        )
+        progress_events: list[dict[str, object]] = []
+        observed_status: list[str] = []
+
+        def fake_recognize_metadata_with_llm(**_: object) -> MetadataRecognitionResult:
+            latest_steps = progress_events[-1]["steps"]
+            metadata_step = next(step for step in latest_steps if step["id"] == "metadata_extract")
+            observed_status.append(str(metadata_step["status"]))
+            return MetadataRecognitionResult(
+                authors=["张三"],
+                fields_supplemented=["authors"],
+                debug_info={"used_llm": True},
+            )
+
+        tracker = ParseRuntimeTracker(progress_callback=progress_events.append)
+        with patch("services.paper_parse_service.recognize_metadata_with_llm", side_effect=fake_recognize_metadata_with_llm):
+            build_paper_result("sample.pdf", pdf_result, runtime_tracker=tracker)
+
+        self.assertEqual(observed_status, ["running"])
 
     def test_parse_uploaded_pdf_returns_structured_failure_feedback(self) -> None:
         with self.assertRaises(ParsePipelineError) as context:

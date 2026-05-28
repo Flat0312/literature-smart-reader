@@ -81,6 +81,7 @@ class NormalizedPaperParseResult:
     structured_note: str = ""
     explicit_abstract_labels_found: bool = False
     llm_supplemented_fields: list[str] = field(default_factory=list)
+    ai_metadata_supplemented: list[str] = field(default_factory=list)
 
     def filtered_authors(self) -> list[str]:
         return _compact_text_list(self.authors)
@@ -186,6 +187,7 @@ class NormalizedPaperParseResult:
             "source_language": (self.source_language or "").strip() or "unknown",
             "primary_summary_language": self.primary_summary_language() or "unknown",
             "parse_warnings": self.warning_items(),
+            "ai_metadata_supplemented": list(self.ai_metadata_supplemented),
         }
 
 
