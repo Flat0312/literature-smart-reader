@@ -3,13 +3,14 @@ from __future__ import annotations
 import unittest
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from views.home_view import _build_home_hero_html
-from views.result_view import _build_result_sections
+from views.result_view import _build_result_sections, _should_show_debug_info
 
 
 class _DummyResult:
@@ -89,6 +90,13 @@ class FrontendShellTests(unittest.TestCase):
         self.assertIn("AI 补充识别", left_html)
         self.assertIn("pf-panel--main", center_html)
         self.assertIn("pf-panel--rail", right_intro_html)
+
+    def test_debug_info_is_hidden_unless_explicitly_enabled(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(_should_show_debug_info())
+
+        with patch.dict("os.environ", {"SHOW_DEBUG_INFO": "1"}, clear=True):
+            self.assertTrue(_should_show_debug_info())
 
 
 if __name__ == "__main__":

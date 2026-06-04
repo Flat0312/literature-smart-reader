@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from html import escape
+import os
 from textwrap import dedent
 
 import streamlit as st
@@ -104,9 +105,13 @@ def render_result_view() -> None:
                 f'<div class="rs-body-text">{_fmt_multiline(reflow_text_for_display(result.raw_text))}</div>',
                 unsafe_allow_html=True,
             )
-    if result.structured_debug:
+    if result.structured_debug and _should_show_debug_info():
         with st.expander("🔧 开发信息 · 解析调试数据"):
             st.json(result.structured_debug)
+
+
+def _should_show_debug_info() -> bool:
+    return os.getenv("SHOW_DEBUG_INFO", "").strip() == "1"
 
 
 def _build_result_sections(result) -> tuple[str, str, str, str]:
