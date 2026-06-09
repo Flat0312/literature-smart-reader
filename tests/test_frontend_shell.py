@@ -20,6 +20,19 @@ class _DummyResult:
     title = "测试论文标题"
     file_name = "demo-paper.pdf"
 
+    class _ParsedResult:
+        ai_metadata_supplemented: list = ["作者"]
+
+    parsed_result = _ParsedResult()
+
+    def structured_field_text(self, field_name: str, fallback_text: str | None = None) -> str:
+        mapping = {
+            "research_question": "研究问题内容",
+            "research_method": "研究方法内容",
+            "core_conclusion": "核心结论内容",
+        }
+        return mapping.get(field_name, fallback_text or "")
+
     def warning_items(self) -> list[str]:
         return ["以下字段由 AI 补充识别：作者，建议结合原文核对。"]
 
@@ -64,10 +77,10 @@ class _DummyResult:
         return "方法说明。"
 
     def innovation_items(self) -> list[str]:
-        return ["创新点 1"]
+        return ["创新点 1", "创新点 2"]
 
     def limitation_items(self) -> list[str]:
-        return ["不足 1"]
+        return ["不足 1", "不足 2"]
 
 
 class FrontendShellTests(unittest.TestCase):
@@ -81,7 +94,7 @@ class FrontendShellTests(unittest.TestCase):
         self.assertNotIn("home-flow", hero_html)
 
     def test_result_sections_use_current_card_classes_and_parse_hints(self) -> None:
-        hero_html, left_html, center_html, right_intro_html = _build_result_sections(_DummyResult())
+        hero_html, package_html, left_html, center_html, right_intro_html = _build_result_sections(_DummyResult())
 
         self.assertIn("pf-result-hero", hero_html)
         self.assertIn("rs-hero__meta", hero_html)
@@ -90,6 +103,16 @@ class FrontendShellTests(unittest.TestCase):
         self.assertIn("AI 补充识别", left_html)
         self.assertIn("pf-panel--main", center_html)
         self.assertIn("pf-panel--rail", right_intro_html)
+        self.assertIn("学习成果包", package_html)
+        self.assertIn("rs-package-grid", package_html)
+        self.assertIn("论文结构地图", center_html)
+        self.assertIn("rs-map-flow", center_html)
+        self.assertIn("可信度", left_html)
+        self.assertIn("rs-cred-card", left_html)
+        self.assertIn("作业模式工作台", right_intro_html)
+        self.assertIn("rs-impact-card", center_html)
+        self.assertIn("rs-impact-card--pro", center_html)
+        self.assertIn("rs-impact-card--con", center_html)
 
     def test_debug_info_is_hidden_unless_explicitly_enabled(self) -> None:
         with patch.dict("os.environ", {}, clear=True):

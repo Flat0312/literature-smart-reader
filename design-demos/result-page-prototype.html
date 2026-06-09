@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>文献智读 · 结果页原型</title>
+<style>
+@import url("https://fonts.googleapis.com/css2?family=Onest:wght@500;600;700&display=swap");
+
+/* ── Design System ── */
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f5f5f5;
+  --surface: #ffffff;
+  --surface-alt: #f5f5f5;
+  --ink: #0a0a0a;
+  --ink-soft: #393939;
+  --muted: #717171;
+  --line: #0a0a0a;
+  --line-subtle: #e5e5e5;
+  --accent: #4f46e5;
+  --accent-hover: #6366f1;
+  --accent-2: #2F81F7;
+  --accent-3: #FF6B7A;
+  --accent-gold: #FDB927;
+  --accent-red: #FF4A60;
+  --accent-soft: rgba(79, 70, 229, 0.08);
+  --shadow: 8px 8px 0px 0px rgba(0, 0, 0, 1);
+  --shadow-sm: 6px 6px 0px 0px rgba(0, 0, 0, 1);
+  --shadow-xs: 4px 4px 0px 0px rgba(0, 0, 0, 1);
+  --r: 32px;
+  --r-sm: 16px;
+  --r-lg: 32px;
+  --border-w: 3px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+body {
+  margin: 0;
+  font-family: "Onest", ui-sans-serif, system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+  line-height: 1.6;
+}
+
+.page-wrapper {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+/* ── Accent System ── */
+.hl-coral { display: inline-block; padding: 0 0.2em; background: #FF6B7A; color: #fff; border-radius: 4px; font-weight: 700; }
+.hl-blue { display: inline-block; padding: 0 0.2em; background: #2F81F7; color: #fff; border-radius: 4px; font-weight: 700; }
+.hl-green { display: inline-block; padding: 0 0.2em; background: #10B981; color: #fff; border-radius: 4px; font-weight: 700; }
+.hl-purple { display: inline-block; padding: 0 0.2em; background: #8B5CF6; color: #fff; border-radius: 4px; font-weight: 700; }
+
+.chip-coral { background: #FFF0F2; border-color: #FF6B7A; color: #FF6B7A; }
+.chip-blue { background: #EFF6FF; border-color: #2F81F7; color: #2F81F7; }
+.chip-indigo { background: #EEF2FF; border-color: #6366F1; color: #6366F1; }
+.chip-green { background: #ECFDF5; border-color: #10B981; color: #065F46; }
+.chip-purple { background: #F5F3FF; border-color: #8B5CF6; color: #8B5CF6; }
+
+.topbar-coral { border-top: 4px solid #FF6B7A; }
+.topbar-blue { border-top: 4px solid #2F81F7; }
+.topbar-indigo { border-top: 4px solid #6366F1; }
+.topbar-green { border-top: 4px solid #10B981; }
+.topbar-purple { border-top: 4px solid #8B5CF6; }
+
+.icon-coral { background: #FF6B7A; }
+.icon-blue { background: #2F81F7; }
+.icon-purple { background: #8B5CF6; }
+.icon-green { background: #10B981; }
+
+.accent-green { border-left: 5px solid #10B981 !important; }
+.accent-coral { border-left: 5px solid #FF6B7A !important; }
+
+/* ── Shared card styles ── */
+.pf-panel--meta,
+.pf-panel--main,
+.pf-panel--rail {
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── Hero ── */
+.pf-result-hero {
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  box-shadow: var(--shadow-sm);
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+}
+.rs-hero__label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+}
+.rs-hero__title {
+  margin: 0 0 0.4rem;
+  font-size: clamp(1.4rem, 3vw, 2rem);
+  line-height: 1.15;
+  font-weight: 700;
+  color: var(--ink);
+}
+.rs-hero__file {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.rs-hero__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.8rem;
+}
+.rs-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding: 0.12rem 0.55rem;
+  border: 2px solid;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+/* ── Package ── */
+.rs-result-package {
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  box-shadow: var(--shadow-sm);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.rs-result-package__head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+.rs-result-package__head h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+.rs-package-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+.rs-package-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.6rem 0.7rem;
+  border: 2px solid var(--line-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  transition: all 0.2s ease;
+}
+.rs-package-item:hover {
+  border-color: var(--line);
+  transform: translateY(-2px) rotate(-0.5deg);
+  box-shadow: var(--shadow-xs);
+}
+.rs-package-icon {
+  display: grid;
+  place-items: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #fff;
+}
+.rs-package-item strong {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.rs-package-item p {
+  margin: 0;
+  font-size: 0.68rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+/* ── Action Buttons ── */
+.action-row {
+  display: grid;
+  grid-template-columns: 1.12fr 1.12fr 0.95fr 0.95fr;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+.btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.55rem 1rem;
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  box-shadow: var(--shadow-xs);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+}
+.btn--primary {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+/* ── Three-column layout ── */
+.three-col {
+  display: grid;
+  grid-template-columns: 0.92fr 2.55fr 1.18fr;
+  gap: 1.2rem;
+  align-items: start;
+}
+.col-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+/* ── Left: Metadata Card ── */
+.rs-side-card {
+  padding: 1.1rem;
+}
+.rs-side-card__title {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.rs-info-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.6rem;
+}
+.rs-info-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--line-subtle);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.rs-info-row:last-child { border-bottom: none; }
+.rs-info-row__label {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.rs-label-stack {
+  margin-bottom: 0.5rem;
+}
+.rs-mini-label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.3rem;
+}
+.rs-chip-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.kw-chip, .author-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding: 0.15rem 0.5rem;
+  border: 2px solid var(--line-subtle);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  transition: border-color 0.15s ease;
+}
+.rs-label-stack--tips {
+  margin-top: 0.3rem;
+}
+.rs-list-shell {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+.rs-list {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+.rs-list li {
+  margin-bottom: 0.2rem;
+}
+
+/* ── Credibility Card ── */
+.rs-cred-card {
+  padding: 0.9rem;
+}
+.rs-cred-card__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.rs-cred-card__head h3 {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+.rs-cred-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--line-subtle);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.rs-cred-item:last-child { border-bottom: none; }
+.rs-cred-label {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.rs-cred-note {
+  margin: 0.4rem 0 0;
+  font-size: 0.72rem;
+  color: #FF6B7A;
+  font-weight: 600;
+}
+
+/* ── Center: Main modules ── */
+.rs-main-module {
+  padding: 1.2rem;
+  margin-bottom: 0.8rem;
+}
+.rs-section__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+.rs-section__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+.rs-summary-box {
+  padding: 0.8rem;
+  border: 2px solid var(--line-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+  margin-bottom: 0.5rem;
+}
+.rs-summary-box h4 {
+  margin: 0 0 0.4rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+.rs-body-text {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+/* ── Structured rows ── */
+.rs-structured-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.rs-structured-row {
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line-subtle);
+}
+.rs-structured-row:last-child { border-bottom: none; }
+.rs-structured-row__title {
+  margin: 0 0 0.3rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.rs-structured-row__body {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+/* ── Structure Map ── */
+.rs-structure-map {
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  box-shadow: var(--shadow-xs);
+  padding: 1.2rem;
+  margin-bottom: 0.8rem;
+}
+.rs-structure-map__head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+}
+.rs-structure-map__head h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+.rs-map-flow {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+  overflow-x: auto;
+  padding-bottom: 0.3rem;
+}
+.rs-map-node {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.55rem 0.6rem;
+  border: 2px solid var(--line-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  text-align: center;
+  transition: all 0.2s ease;
+}
+.rs-map-node:hover {
+  border-color: var(--line);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-xs);
+}
+.rs-map-node__icon {
+  display: block;
+  font-size: 1.1rem;
+  margin-bottom: 0.15rem;
+}
+.rs-map-node__label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 0.15rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.rs-map-node__text {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+.rs-map-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 1.4rem;
+  min-height: 3rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+  align-self: center;
+}
+
+/* ── AI Reading cards ── */
+.rs-reading-card {
+  padding: 0.8rem 0;
+  border-bottom: 1px solid var(--line-subtle);
+}
+.rs-reading-card:last-child { border-bottom: none; }
+.rs-reading-card__title {
+  margin: 0 0 0.4rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+/* ── Impact Cards (NEW) ── */
+.rs-impact-card {
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  box-shadow: var(--shadow-xs);
+  padding: 1rem;
+  margin-bottom: 0.8rem;
+}
+.rs-impact-card--pro { border-left: 5px solid #10B981; }
+.rs-impact-card--con { border-left: 5px solid #FF6B7A; }
+.rs-impact-card__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+.rs-impact-card__head h3 {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+.rs-impact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.rs-impact-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+.rs-impact-num {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: #fff;
+  margin-top: 0.15rem;
+}
+.rs-impact-num--pro { background: #10B981; }
+.rs-impact-num--con { background: #FF6B7A; }
+
+/* ── Right: Assignment Workbench ── */
+.rs-rail-card {
+  padding: 0.9rem;
+}
+.rs-rail-card--intro {
+  margin-bottom: 0.6rem;
+}
+.rs-rail-card__title {
+  margin: 0 0 0.4rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.rs-writing-intro {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* ── Task Hint ── */
+.rs-task-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.5rem 0.6rem;
+  border: 2px solid var(--line-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+  margin-bottom: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+.rs-task-hint__icon {
+  flex: 0 0 auto;
+  font-size: 0.9rem;
+  line-height: 1;
+  margin-top: 0.1rem;
+}
+
+/* ── Steps Hint (NEW) ── */
+.rs-steps-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.45rem 0.55rem;
+  border: 2px dashed var(--line-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+  margin-bottom: 0.5rem;
+  font-size: 0.68rem;
+  color: var(--muted);
+  line-height: 1.4;
+  flex-wrap: wrap;
+}
+.rs-steps-hint__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  white-space: nowrap;
+}
+.rs-steps-hint__num {
+  display: inline-grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 0.56rem;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.rs-steps-hint__arrow {
+  color: var(--line-subtle);
+  font-size: 0.68rem;
+  margin: 0 0.1rem;
+}
+
+/* ── Outline Count (NEW) ── */
+.rs-outline-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.55rem;
+  border: 2px solid var(--line-subtle);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin-bottom: 0.5rem;
+}
+.rs-outline-count__num {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* ── Tabs ── */
+.tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--line-subtle);
+  margin-bottom: 0.8rem;
+}
+.tab-btn {
+  flex: 1;
+  padding: 0.5rem 0.6rem;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+.tab-btn:hover { color: var(--ink); }
+.tab-btn--active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+.tab-panel { display: none; }
+.tab-panel--active { display: block; }
+
+/* ── Outline body ── */
+.rs-outline-panel__title {
+  margin: 0 0 0.4rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+/* ── Copy area ── */
+.copy-area {
+  margin-top: 0.5rem;
+  padding: 0.6rem;
+  border: 2px dashed var(--line-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  font-family: "Onest", ui-sans-serif, system-ui, sans-serif;
+  position: relative;
+}
+.copy-btn {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  padding: 0.2rem 0.5rem;
+  border: 2px solid var(--line-subtle);
+  border-radius: 8px;
+  background: var(--bg);
+  font-family: inherit;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.copy-btn:hover {
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+/* ── Caption ── */
+.page-caption {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-bottom: 0.8rem;
+  text-align: center;
+}
+
+/* ── Responsive ── */
+@media (max-width: 980px) {
+  .three-col { grid-template-columns: 1fr; }
+  .rs-package-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rs-map-flow { flex-wrap: wrap; gap: 0.4rem; }
+  .rs-map-node { flex: 1 1 calc(50% - 0.4rem); }
+  .rs-map-arrow { display: none; }
+}
+@media (max-width: 640px) {
+  .rs-package-grid { grid-template-columns: 1fr; }
+  .rs-map-node { flex: 1 1 100%; }
+  .action-row { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="page-wrapper">
+
+  <!-- ═══ HERO ═══ -->
+  <section class="pf-result-hero">
+    <div class="rs-hero">
+      <p class="rs-hero__label">论文解析结果</p>
+      <h1 class="rs-hero__title">基于深度学习的电商用户购买行为预测模型研究</h1>
+      <p class="rs-hero__file">电商用户行为预测_张明等_2024.pdf</p>
+      <div class="rs-hero__meta">
+        <span class="rs-badge chip-green">已完成解析</span>
+        <span class="rs-badge chip-blue">LLM 增强</span>
+        <span class="rs-badge chip-indigo">3/3 字段</span>
+        <span class="rs-badge chip-purple">6 关键词</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ PACKAGE ═══ -->
+  <section class="rs-result-package topbar-green">
+    <div class="rs-result-package__head">
+      <h2>📦 学习成果包</h2>
+    </div>
+    <div class="rs-package-grid">
+      <div class="rs-package-item">
+        <span class="rs-package-icon icon-coral">📄</span>
+        <div><strong>论文速读卡</strong><p>标题、摘要、关键词与基础信息</p></div>
+      </div>
+      <div class="rs-package-item">
+        <span class="rs-package-icon icon-blue">🔍</span>
+        <div><strong>结构化解读</strong><p>研究问题/方法/结论 已提取 3 项</p></div>
+      </div>
+      <div class="rs-package-item">
+        <span class="rs-package-icon icon-purple">📝</span>
+        <div><strong>三类作业提纲</strong><p>课程汇报 / 课程论文 / 文献综述</p></div>
+      </div>
+      <div class="rs-package-item">
+        <span class="rs-package-icon icon-green">⬇️</span>
+        <div><strong>可导出成果</strong><p>支持 .md / .txt 导出</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ ACTION BUTTONS ═══ -->
+  <div class="action-row">
+    <button class="btn btn--primary">⬇️ 导出结果 .md</button>
+    <button class="btn">📄 导出结果 .txt</button>
+    <button class="btn">📤 重新上传</button>
+    <button class="btn">🏠 返回首页</button>
+  </div>
+
+  <p class="page-caption">结果页按「基础信息 + 主阅读列 + 提纲输出区」组织，核心内容集中在中间主列，右侧用于按需查看提纲输出。</p>
+
+  <!-- ═══ THREE-COLUMN LAYOUT ═══ -->
+  <div class="three-col">
+
+    <!-- ── LEFT COLUMN ── -->
+    <div class="col-stack">
+      <div class="rs-side-card pf-panel--meta">
+        <h3 class="rs-side-card__title">文献信息</h3>
+        <div class="rs-info-list">
+          <div class="rs-info-row">
+            <span class="rs-info-row__label">文件名</span>
+            <span class="rs-info-row__value">电商用户行为预测_张明等_2024.pdf</span>
+          </div>
+          <div class="rs-info-row">
+            <span class="rs-info-row__label">摘要语言</span>
+            <span class="rs-info-row__value">中文摘要优先</span>
+          </div>
+        </div>
+        <div class="rs-label-stack">
+          <span class="rs-mini-label">作者</span>
+          <div class="rs-chip-cloud">
+            <span class="author-chip chip-indigo">张明</span>
+            <span class="author-chip chip-coral">李华</span>
+            <span class="author-chip chip-blue">王强</span>
+          </div>
+        </div>
+        <div class="rs-label-stack">
+          <span class="rs-mini-label">关键词</span>
+          <div class="rs-chip-cloud">
+            <span class="kw-chip chip-indigo">深度学习</span>
+            <span class="kw-chip chip-coral">用户行为</span>
+            <span class="kw-chip chip-blue">购买预测</span>
+            <span class="kw-chip chip-gold">电商</span>
+            <span class="kw-chip chip-green">注意力机制</span>
+            <span class="kw-chip chip-purple">序列模型</span>
+          </div>
+        </div>
+        <div class="rs-label-stack rs-label-stack--tips">
+          <span class="rs-mini-label">解析提示</span>
+          <div class="rs-list-shell">
+            <ul class="rs-list">
+              <li>主摘要来自中文摘要原文。</li>
+              <li>关键词来源：显式关键词区。</li>
+              <li>结构化字段生成方式：LLM 增强。</li>
+              <li>当前未发现需要额外警示的解析异常。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Credibility Card -->
+      <div class="rs-cred-card pf-panel--rail">
+        <div class="rs-cred-card__head">
+          <h3>🔍 可信度 / 复核提示</h3>
+        </div>
+        <div class="rs-cred-item"><span class="rs-cred-label">摘要来源</span>中文摘要原文</div>
+        <div class="rs-cred-item"><span class="rs-cred-label">关键词来源</span>显式关键词区</div>
+        <div class="rs-cred-item"><span class="rs-cred-label">结构化字段</span>LLM 增强</div>
+        <p class="rs-cred-note">⚠ AI 补充字段：作者，建议结合原文核对。</p>
+      </div>
+    </div>
+
+    <!-- ── CENTER COLUMN ── -->
+    <div class="col-stack">
+      <!-- Main Summary -->
+      <section class="rs-main-module pf-panel--main topbar-coral">
+        <div class="rs-section__head">
+          <h2 class="rs-section__title">主摘要</h2>
+          <span class="rs-badge chip-coral">中文摘要优先</span>
+        </div>
+        <div class="rs-summary-box">
+          <h4>摘要</h4>
+          <p class="rs-body-text">随着电子商务行业的快速发展，精准预测用户购买行为已成为提升平台运营效率的关键问题。本文提出了一种融合注意力机制与长短期记忆网络的深度学习模型（ALNet），通过分析用户的浏览历史、搜索记录和停留时间等多维行为特征，实现对用户购买意向的准确预测。实验结果表明，该模型在真实电商数据集上的预测准确率达到 92.3%，较传统方法提升 8.7 个百分点。</p>
+        </div>
+      </section>
+
+      <!-- Structured Extraction -->
+      <section class="rs-main-module pf-panel--main topbar-blue">
+        <div class="rs-section__head">
+          <h2 class="rs-section__title">结构化提取</h2>
+          <span class="rs-badge chip-blue">3/3</span>
+        </div>
+        <div class="rs-structured-list">
+          <div class="rs-structured-row">
+            <h3 class="rs-structured-row__title"><span class="hl-coral">❓ 研究问题</span></h3>
+            <p class="rs-structured-row__body">如何利用深度学习技术，融合用户多维行为特征（浏览、搜索、停留时间），构建高精度的电商购买行为预测模型？</p>
+          </div>
+          <div class="rs-structured-row">
+            <h3 class="rs-structured-row__title"><span class="hl-blue">🛠️ 研究方法</span></h3>
+            <p class="rs-structured-row__body">提出 ALNet 模型，结合注意力机制与 LSTM 网络，对用户行为序列进行建模。使用某头部电商平台 200 万条用户行为日志进行训练和验证，采用 AUC、准确率、F1 值作为评估指标。</p>
+          </div>
+          <div class="rs-structured-row">
+            <h3 class="rs-structured-row__title"><span class="hl-green">🎯 核心结论</span></h3>
+            <p class="rs-structured-row__body">ALNet 模型在预测准确率（92.3%）和 AUC（0.96）上均优于基线模型，注意力机制能有效捕捉用户行为中的关键转折点，停留时间是最具预测力的特征之一。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Structure Map -->
+      <section class="rs-structure-map topbar-indigo">
+        <div class="rs-structure-map__head">
+          <h2>🗺️ 论文结构地图</h2>
+        </div>
+        <div class="rs-map-flow">
+          <div class="rs-map-node">
+            <span class="rs-map-node__icon">❓</span>
+            <span class="rs-map-node__label">研究问题</span>
+            <span class="rs-map-node__text">如何利用深度学习预测电商购买行为</span>
+          </div>
+          <span class="rs-map-arrow">→</span>
+          <div class="rs-map-node">
+            <span class="rs-map-node__icon">🛠️</span>
+            <span class="rs-map-node__label">研究方法</span>
+            <span class="rs-map-node__text">ALNet = 注意力机制 + LSTM</span>
+          </div>
+          <span class="rs-map-arrow">→</span>
+          <div class="rs-map-node">
+            <span class="rs-map-node__icon">🎯</span>
+            <span class="rs-map-node__label">核心结论</span>
+            <span class="rs-map-node__text">准确率 92.3%，优于传统方法 8.7pp</span>
+          </div>
+          <span class="rs-map-arrow">→</span>
+          <div class="rs-map-node">
+            <span class="rs-map-node__icon">💡</span>
+            <span class="rs-map-node__label">创新点</span>
+            <span class="rs-map-node__text">首次将注意力-LSTM 融合用于电商预测</span>
+          </div>
+          <span class="rs-map-arrow">→</span>
+          <div class="rs-map-node">
+            <span class="rs-map-node__icon">⚠️</span>
+            <span class="rs-map-node__label">不足之处</span>
+            <span class="rs-map-node__text">仅用单一平台数据，泛化性待验证</span>
+          </div>
+          <span class="rs-map-arrow">→</span>
+          <div class="rs-map-node">
+            <span class="rs-map-node__icon">✏️</span>
+            <span class="rs-map-node__label">写作用途</span>
+            <span class="rs-map-node__text">可直接用于课程汇报、论文写作或文献综述</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- AI Interpretation -->
+      <section class="rs-main-module pf-panel--main topbar-purple">
+        <div class="rs-section__head">
+          <h2 class="rs-section__title">AI 解读与评价</h2>
+        </div>
+        <div class="rs-reading-card">
+          <h3 class="rs-reading-card__title">通俗摘要</h3>
+          <p class="rs-body-text">这篇论文想解决的问题是：电商平台怎么猜到用户想买什么。作者设计了一个叫 ALNet 的 AI 模型，它能「看懂」用户在平台上的各种行为（浏览了什么、搜了什么、看了多久），然后预测这个用户接下来会不会下单。实验结果显示，这个模型猜对的概率超过 92%，比以前的方法好不少。</p>
+        </div>
+        <div class="rs-reading-card">
+          <h3 class="rs-reading-card__title">研究方法说明</h3>
+          <p class="rs-body-text">ALNet 的核心思路是「注意力机制 + LSTM」。LSTM 负责理解用户行为的时间顺序（先看了什么、后看了什么），注意力机制负责判断哪些行为最关键（比如长时间停留的商品页比快速划过的更重要）。两者结合后，模型能同时捕捉「顺序」和「重点」。</p>
+        </div>
+      </section>
+
+      <!-- Innovation Points (Impact Card) -->
+      <div class="rs-impact-card rs-impact-card--pro">
+        <div class="rs-impact-card__head">
+          <h3>💡 创新点</h3>
+        </div>
+        <ul class="rs-impact-list">
+          <li class="rs-impact-item">
+            <span class="rs-impact-num rs-impact-num--pro">1</span>
+            <span>首次将注意力机制与 LSTM 融合应用于电商用户行为预测，提出了 ALNet 架构。</span>
+          </li>
+          <li class="rs-impact-item">
+            <span class="rs-impact-num rs-impact-num--pro">2</span>
+            <span>引入「停留时间」作为独立特征维度，验证了其在购买预测中的关键作用。</span>
+          </li>
+          <li class="rs-impact-item">
+            <span class="rs-impact-num rs-impact-num--pro">3</span>
+            <span>使用大规模真实电商数据集（200 万条）进行验证，实验设计较为完整。</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Limitations (Impact Card) -->
+      <div class="rs-impact-card rs-impact-card--con">
+        <div class="rs-impact-card__head">
+          <h3>⚠️ 不足之处</h3>
+        </div>
+        <ul class="rs-impact-list">
+          <li class="rs-impact-item">
+            <span class="rs-impact-num rs-impact-num--con">1</span>
+            <span>数据来源单一（仅某头部平台），模型在其他电商平台或品类上的泛化能力未经验证。</span>
+          </li>
+          <li class="rs-impact-item">
+            <span class="rs-impact-num rs-impact-num--con">2</span>
+            <span>未考虑用户社交关系、价格敏感度等可能影响购买决策的外部因素。</span>
+          </li>
+          <li class="rs-impact-item">
+            <span class="rs-impact-num rs-impact-num--con">3</span>
+            <span>模型可解释性不足，注意力权重的业务含义未做深入分析。</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ── RIGHT COLUMN ── -->
+    <div class="col-stack">
+      <!-- Workbench intro -->
+      <div class="rs-rail-card rs-rail-card--intro pf-panel--rail">
+        <h3 class="rs-rail-card__title">📝 作业模式工作台</h3>
+        <p class="rs-writing-intro">选择你的作业场景，获取对应的结构化输出。每个模式都提供任务定位和可直接使用的提纲。</p>
+      </div>
+
+      <!-- Tabs -->
+      <div>
+        <div class="tab-bar">
+          <button class="tab-btn tab-btn--active" onclick="switchTab(this, 'tab-presentation')">课程汇报</button>
+          <button class="tab-btn" onclick="switchTab(this, 'tab-paper')">课程论文</button>
+          <button class="tab-btn" onclick="switchTab(this, 'tab-review')">文献综述</button>
+        </div>
+
+        <!-- Tab 1: 课程汇报 -->
+        <div id="tab-presentation" class="tab-panel tab-panel--active">
+          <div class="rs-task-hint">
+            <span class="rs-task-hint__icon">🎤</span>
+            <span>适合直接拆成 PPT 页或课堂讲稿，快速定位汇报要点。</span>
+          </div>
+          <div class="rs-steps-hint">
+            <span class="rs-steps-hint__step"><span class="rs-steps-hint__num">1</span>浏览提纲</span>
+            <span class="rs-steps-hint__arrow">→</span>
+            <span class="rs-steps-hint__step"><span class="rs-steps-hint__num">2</span>按要点扩展</span>
+            <span class="rs-steps-hint__arrow">→</span>
+            <span class="rs-steps-hint__step"><span class="rs-steps-hint__num">3</span>制作 PPT</span>
+          </div>
+          <div class="rs-outline-count">
+            <span>📋</span>
+            已生成 <span class="rs-outline-count__num">5</span> 条提纲要点
+          </div>
+          <div class="rs-rail-card rs-rail-card--outline pf-panel--rail">
+            <h4 class="rs-outline-panel__title">课程汇报提纲</h4>
+            <div class="rs-list-shell">
+              <ol class="rs-list">
+                <li>研究背景：电商用户行为预测的行业需求</li>
+                <li>现有方法的局限性与本文研究问题</li>
+                <li>ALNet 模型架构：注意力 + LSTM</li>
+                <li>实验设计与核心结果（准确率 92.3%）</li>
+                <li>创新点、不足与未来方向</li>
+              </ol>
+            </div>
+          </div>
+          <div class="copy-area">
+            <button class="copy-btn" onclick="copyText(this)">📋 复制</button>1. 研究背景：电商用户行为预测的行业需求
+2. 现有方法的局限性与本文研究问题
+3. ALNet 模型架构：注意力 + LSTM
+4. 实验设计与核心结果（准确率 92.3%）
+5. 创新点、不足与未来方向</div>
+        </div>
+
+        <!-- Tab 2: 课程论文 -->
+        <div id="tab-paper" class="tab-panel">
+          <div class="rs-task-hint">
+            <span class="rs-task-hint__icon">📝</span>
+            <span>适合扩写为课程论文结构，围绕研究问题、方法、评价展开。</span>
+          </div>
+          <div class="rs-steps-hint">
+            <span class="rs-steps-hint__step"><span class="rs-steps-hint__num">1</span>确认论点</span>
+            <span class="rs-steps-hint__arrow">→</span>
+            <span class="rs-steps-hint__step"><span class="rs-steps-hint__num">2</span>按结构扩写</span>
+            <span class="rs-steps-hint__arrow">→</span>
+            <span class="rs-steps-hint__step"><span class="rs-steps-hint__num">3</span>补充文献引用</span>
+          </div>
+          <div class="rs-outline-count">
+            <span>📋</span>
+            已生成 <span class="rs-outline-count__num">6</span> 条提纲要点
+          </div>
+          <div class="rs-rail-card rs-rail-card--outline pf-panel--rail">
+            <h4 class="rs-outline-panel__title">课程论文提纲</h4>
+            <div class="rs-list-shell">
+              <ol class="rs-list">
+                <li>引言：电商个性化推荐的研究意义</li>
+                <li>文献综述：用户行为预测方法演进</li>
+                <li>ALNet 模型设计与技术细节</li>
+                <li>实验结果分析与对比讨论</li>
+                <li>创新贡献与局限性评价</li>
+                <li>结论与未来研究方向</li>
+              </ol>
+            </div>
+          </div>
+          <div class="copy-area">
+            <button class="copy-btn" onclick="copyText(this)">📋 复制</button>1. 引言：电商个性化推荐的研究意义
+2. 文献综述：用户行为预测方法演进
+3. ALNet 模型设计与技术细节
+4. 实验结果分析与对比讨论
+5. 创新贡献与局限性评价
+6. 结论与未来研究方向</div>
+        </div>
+
+        <!-- Tab 3: 文献综述 -->
+        <div id="tab-review" class="tab-panel">
+          <div class="rs-task-hint">
+            <span class="rs-task-hint__icon">📚</span>
+            <span>适合作为文献综述材料卡，标注可比较维度和可引用观点。</span>
+          </div>
+          <div class="rs-steps-hint">
+            <span class="rs-steps-hint__step"><span class="rs-steps-hint__num">1</span>标注可比较维度</span>
+            <span class="rs-steps-hint__arrow">→</span>
+            <span class="rs-steps-hint__step"><span class="rs-steps-hint__num">2</span>收集同类文献</span>
+            <span class="rs-steps-hint__arrow">→</span>
+            <span class="rs-steps-hint__step"><span class="rs-steps-hint__num">3</span>组织综述框架</span>
+          </div>
+          <div class="rs-outline-count">
+            <span>📋</span>
+            已生成 <span class="rs-outline-count__num">5</span> 条提纲要点
+          </div>
+          <div class="rs-rail-card rs-rail-card--outline pf-panel--rail">
+            <h4 class="rs-outline-panel__title">文献综述基础框架</h4>
+            <div class="rs-list-shell">
+              <ol class="rs-list">
+                <li>研究主题：电商用户行为预测方法</li>
+                <li>可比较维度：模型架构 / 特征工程 / 数据规模 / 评估指标</li>
+                <li>本文定位：注意力+LSTM 融合路线的代表工作</li>
+                <li>可引用观点：停留时间的预测力验证（准确率 92.3%）</li>
+                <li>综述缺口：跨平台泛化、可解释性分析</li>
+              </ol>
+            </div>
+          </div>
+          <div class="copy-area">
+            <button class="copy-btn" onclick="copyText(this)">📋 复制</button>1. 研究主题：电商用户行为预测方法
+2. 可比较维度：模型架构 / 特征工程 / 数据规模 / 评估指标
+3. 本文定位：注意力+LSTM 融合路线的代表工作
+4. 可引用观点：停留时间的预测力验证（准确率 92.3%）
+5. 综述缺口：跨平台泛化、可解释性分析</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+function switchTab(btn, tabId) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('tab-btn--active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('tab-panel--active'));
+  btn.classList.add('tab-btn--active');
+  document.getElementById(tabId).classList.add('tab-panel--active');
+}
+
+function copyText(btn) {
+  const area = btn.parentElement;
+  const text = area.textContent.replace('📋 复制', '').trim();
+  navigator.clipboard.writeText(text).then(() => {
+    const original = btn.textContent;
+    btn.textContent = '✅ 已复制';
+    setTimeout(() => btn.textContent = original, 1500);
+  });
+}
+</script>
+</body>
+</html>
