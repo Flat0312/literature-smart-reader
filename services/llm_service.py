@@ -951,14 +951,14 @@ def _merge_payload_with_rule_candidates(
         candidate_text = (candidate.text if candidate else "").strip()
         payload_text = getattr(payload, field_name, "").strip()
 
-        if candidate_text:
-            merged_fields[field_name] = candidate_text
-            preserved_rule_fields.append(field_name)
-            continue
-
         if payload_text and payload_text != STRUCTURED_LOW_CONFIDENCE_TEXT:
             merged_fields[field_name] = payload_text
             supplemented_fields.append(field_name)
+            continue
+
+        if candidate_text:
+            merged_fields[field_name] = candidate_text
+            preserved_rule_fields.append(field_name)
             continue
 
         merged_fields[field_name] = ""
@@ -975,10 +975,11 @@ def _build_result_note(
     if supplemented_fields:
         supplemented_text = "、".join(STRUCTURED_FIELD_LABELS.get(field_name, field_name) for field_name in supplemented_fields)
         if preserved_rule_fields:
-            return f"模型概括仅补充了 {supplemented_text}，其余字段保留原文规则抽取结果。"
-        return f"模型概括生成了 {supplemented_text}。"
+            preserved_text = "、".join(STRUCTURED_FIELD_LABELS.get(field_name, field_name) for field_name in preserved_rule_fields)
+            return f"模型已生成 {supplemented_text}；{preserved_text}因模型未返回有效结果，保留原文规则抽取。"
+        return f"模型已生成 {supplemented_text}。"
     if preserved_rule_fields:
-        return "当前结果优先保留原文规则抽取结果。"
+        return "模型未返回有效结果，当前结果保留原文规则抽取。"
     return cleaned_note
 
 
