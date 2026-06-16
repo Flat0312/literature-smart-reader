@@ -110,7 +110,7 @@ AUTHOR_STOP_PATTERN = re.compile(
     r"^(?:〔\s*(?:摘\s*要|摘要|关键词|关键字|引用本文格式|引用格式)\s*〕|\[\s*(?:摘\s*要|摘要|关键词|关键字|引用本文格式|引用格式)\s*\]|摘\s*要|摘要|关键词|关键字|引用本文格式|引用格式|abstract|keywords?|引言|绪论|参考文献|作者简介)\b",
     re.IGNORECASE,
 )
-AUTHOR_MARKER_PATTERN = re.compile(r"^(?:作者|author(?:s)?|by)\s*[:：]?\s*(.*)$", re.IGNORECASE)
+AUTHOR_MARKER_PATTERN = re.compile(r"^(?:作者(?![简介单位信息])|author(?:s)?|by)\s*[:：]?\s*(.*)$", re.IGNORECASE)
 AUTHOR_INSTITUTION_PATTERN = re.compile(
     r"(大学|学院|学校|研究院|研究所|实验室|中心|department|university|college|school|institute|faculty|laboratory|email|e-mail|邮编|地址|单位|基金)",
     re.IGNORECASE,
@@ -435,7 +435,8 @@ def _extract_author_candidates_from_title_zone(text: str, title: str) -> list[st
             continue
         if _is_plausible_author_candidate(line):
             # Reject lines that look like sentences (contain punctuation or are too long)
-            compact = re.sub(r"\s+", "", line)
+            # Strip digit superscripts (reference numbers) before length check
+            compact = re.sub(r"(?<=[一-鿿A-Za-z])\d+", "", re.sub(r"\s+", "", line))
             if len(compact) > 24 or re.search(r"[。！？!?,；;：:]", line):
                 if candidates:
                     break
