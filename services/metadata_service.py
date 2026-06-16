@@ -154,33 +154,24 @@ def extract_authors_with_source(
     title_zone_candidates = _extract_author_candidates_from_title_zone(front_text, title)
     raw_candidates.extend(title_zone_candidates)
     cleaned_from_title_zone = _clean_author_candidates(title_zone_candidates)
-    if cleaned_from_title_zone:
-        confidence = "high" if _authors_look_stable(cleaned_from_title_zone) else "medium"
-        return AuthorExtractionResult(
-            authors=cleaned_from_title_zone,
-            source_kind="rule_title_zone",
-            confidence=confidence,
-            raw_candidates=compact_list(title_zone_candidates, 8),
-            cleaned_authors=cleaned_from_title_zone,
-            debug_info={
-                **debug_info,
-                "candidate_buckets": {
-                    "rule_title_zone": title_zone_candidates,
-                    "rule_marker": [],
-                },
-            },
-        )
+    title_zone_confidence = "high" if _authors_look_stable(cleaned_from_title_zone) else "medium" if cleaned_from_title_zone else ""
 
     marker_candidates = _extract_author_candidates_from_markers(front_text)
     raw_candidates.extend(marker_candidates)
     cleaned_from_markers = _clean_author_candidates(marker_candidates)
-    if cleaned_from_markers:
+
+    best_rule_authors = cleaned_from_title_zone or cleaned_from_markers
+    best_rule_source = "rule_title_zone" if cleaned_from_title_zone else "rule_marker" if cleaned_from_markers else ""
+    best_rule_confidence = title_zone_confidence if cleaned_from_title_zone else ("medium" if cleaned_from_markers else "")
+
+    # 规则候选置信度高时直接返回
+    if best_rule_confidence == "high":
         return AuthorExtractionResult(
-            authors=cleaned_from_markers,
-            source_kind="rule_marker",
-            confidence="medium",
+            authors=best_rule_authors,
+            source_kind=best_rule_source,
+            confidence="high",
             raw_candidates=compact_list(raw_candidates, 10),
-            cleaned_authors=cleaned_from_markers,
+            cleaned_authors=best_rule_authors,
             debug_info={
                 **debug_info,
                 "candidate_buckets": {
@@ -190,17 +181,20 @@ def extract_authors_with_source(
             },
         )
 
+    # 置信度不高或无规则候选时，调 LLM 辅助
     llm_result = fallback_authors_with_llm(
         title=title,
         front_text=front_text,
         raw_candidates=compact_list(raw_candidates, 10),
     )
     llm_authors = _clean_author_candidates(llm_result.authors)
+
+    # LLM 结果可用时优先使用
     if llm_authors:
         return AuthorExtractionResult(
             authors=llm_authors,
-            source_kind="llm_fallback",
-            confidence="low",
+            source_kind="llm_assisted" if best_rule_authors else "llm_fallback",
+            confidence="medium" if best_rule_authors else "low",
             raw_candidates=compact_list([*raw_candidates, *(llm_result.authors or [])], 10),
             cleaned_authors=llm_authors,
             debug_info={
@@ -209,6 +203,25 @@ def extract_authors_with_source(
                     "rule_title_zone": title_zone_candidates,
                     "rule_marker": marker_candidates,
                     "llm": llm_result.authors,
+                },
+                "rule_candidates_before_llm": best_rule_authors,
+                "llm_fallback": llm_result.debug_info,
+            },
+        )
+
+    # LLM 也失败时回退到规则结果
+    if best_rule_authors:
+        return AuthorExtractionResult(
+            authors=best_rule_authors,
+            source_kind=best_rule_source,
+            confidence=best_rule_confidence,
+            raw_candidates=compact_list(raw_candidates, 10),
+            cleaned_authors=best_rule_authors,
+            debug_info={
+                **debug_info,
+                "candidate_buckets": {
+                    "rule_title_zone": title_zone_candidates,
+                    "rule_marker": marker_candidates,
                 },
                 "llm_fallback": llm_result.debug_info,
             },
@@ -425,7 +438,7 @@ def _extract_author_candidates_from_title_zone(text: str, title: str) -> list[st
     start_index = min(max(title_indexes[-1] + 1, 0), len(lines))
 
     candidates: list[str] = []
-    for line in lines[start_index: start_index + 5]:
+    for line in lines[start_index: start_index + 10]:
         if AUTHOR_STOP_PATTERN.search(line):
             break
         if AUTHOR_INSTITUTION_PATTERN.search(line) and not _contains_authorish_text(line):
@@ -435,7 +448,7 @@ def _extract_author_candidates_from_title_zone(text: str, title: str) -> list[st
         if _is_plausible_author_candidate(line):
             # Reject lines that look like sentences (contain punctuation or are too long)
             compact = re.sub(r"\s+", "", line)
-            if len(compact) > 12 or re.search(r"[。！？!?,；;：:]", line):
+            if len(compact) > 24 or re.search(r"[。！？!?,；;：:]", line):
                 if candidates:
                     break
                 continue
