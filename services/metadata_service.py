@@ -154,24 +154,33 @@ def extract_authors_with_source(
     title_zone_candidates = _extract_author_candidates_from_title_zone(front_text, title)
     raw_candidates.extend(title_zone_candidates)
     cleaned_from_title_zone = _clean_author_candidates(title_zone_candidates)
-    title_zone_confidence = "high" if _authors_look_stable(cleaned_from_title_zone) else "medium" if cleaned_from_title_zone else ""
+    if cleaned_from_title_zone:
+        confidence = "high" if _authors_look_stable(cleaned_from_title_zone) else "medium"
+        return AuthorExtractionResult(
+            authors=cleaned_from_title_zone,
+            source_kind="rule_title_zone",
+            confidence=confidence,
+            raw_candidates=compact_list(title_zone_candidates, 8),
+            cleaned_authors=cleaned_from_title_zone,
+            debug_info={
+                **debug_info,
+                "candidate_buckets": {
+                    "rule_title_zone": title_zone_candidates,
+                    "rule_marker": [],
+                },
+            },
+        )
 
     marker_candidates = _extract_author_candidates_from_markers(front_text)
     raw_candidates.extend(marker_candidates)
     cleaned_from_markers = _clean_author_candidates(marker_candidates)
-
-    best_rule_authors = cleaned_from_title_zone or cleaned_from_markers
-    best_rule_source = "rule_title_zone" if cleaned_from_title_zone else "rule_marker" if cleaned_from_markers else ""
-    best_rule_confidence = title_zone_confidence if cleaned_from_title_zone else ("medium" if cleaned_from_markers else "")
-
-    # 规则候选置信度高时直接返回
-    if best_rule_confidence == "high":
+    if cleaned_from_markers:
         return AuthorExtractionResult(
-            authors=best_rule_authors,
-            source_kind=best_rule_source,
-            confidence="high",
+            authors=cleaned_from_markers,
+            source_kind="rule_marker",
+            confidence="medium",
             raw_candidates=compact_list(raw_candidates, 10),
-            cleaned_authors=best_rule_authors,
+            cleaned_authors=cleaned_from_markers,
             debug_info={
                 **debug_info,
                 "candidate_buckets": {
@@ -181,20 +190,18 @@ def extract_authors_with_source(
             },
         )
 
-    # 置信度不高或无规则候选时，调 LLM 辅助
+    # 规则全部失败时调 LLM 兜底
     llm_result = fallback_authors_with_llm(
         title=title,
         front_text=front_text,
         raw_candidates=compact_list(raw_candidates, 10),
     )
     llm_authors = _clean_author_candidates(llm_result.authors)
-
-    # LLM 结果可用时优先使用
     if llm_authors:
         return AuthorExtractionResult(
             authors=llm_authors,
-            source_kind="llm_assisted" if best_rule_authors else "llm_fallback",
-            confidence="medium" if best_rule_authors else "low",
+            source_kind="llm_fallback",
+            confidence="low",
             raw_candidates=compact_list([*raw_candidates, *(llm_result.authors or [])], 10),
             cleaned_authors=llm_authors,
             debug_info={
@@ -203,25 +210,6 @@ def extract_authors_with_source(
                     "rule_title_zone": title_zone_candidates,
                     "rule_marker": marker_candidates,
                     "llm": llm_result.authors,
-                },
-                "rule_candidates_before_llm": best_rule_authors,
-                "llm_fallback": llm_result.debug_info,
-            },
-        )
-
-    # LLM 也失败时回退到规则结果
-    if best_rule_authors:
-        return AuthorExtractionResult(
-            authors=best_rule_authors,
-            source_kind=best_rule_source,
-            confidence=best_rule_confidence,
-            raw_candidates=compact_list(raw_candidates, 10),
-            cleaned_authors=best_rule_authors,
-            debug_info={
-                **debug_info,
-                "candidate_buckets": {
-                    "rule_title_zone": title_zone_candidates,
-                    "rule_marker": marker_candidates,
                 },
                 "llm_fallback": llm_result.debug_info,
             },
@@ -435,7 +423,7 @@ def _extract_author_candidates_from_title_zone(text: str, title: str) -> list[st
     title_indexes = _find_title_zone_indexes(lines, title, search_limit=80)
     if not title_indexes:
         return []
-    start_index = min(max(title_indexes[-1] + 1, 0), len(lines))
+    start_index = min(max(title_indexes[0] + 1, 0), len(lines))
 
     candidates: list[str] = []
     for line in lines[start_index: start_index + 10]:
@@ -527,11 +515,25 @@ def _clean_author_candidates(candidates: list[str]) -> list[str]:
     cleaned_authors: list[str] = []
     for candidate in candidates:
         cleaned_authors.extend(_split_author_candidate(candidate))
-    compacted = compact_list(cleaned_authors, 6)
+    # Merge single-char Chinese fragments with the next name (cross-line name fix)
+    merged: list[str] = []
+    skip_next = False
+    for index, author in enumerate(cleaned_authors):
+        if skip_next:
+            skip_next = False
+            continue
+        compact = re.sub(r"\s+", "", author)
+        if re.fullmatch(r"[一-鿿]", compact) and index + 1 < len(cleaned_authors):
+            next_compact = re.sub(r"\s+", "", cleaned_authors[index + 1])
+            if re.fullmatch(r"[一-鿿·]{1,7}", next_compact):
+                merged.append(compact + next_compact)
+                skip_next = True
+                continue
+        merged.append(author)
+    compacted = compact_list(merged, 6)
     result = [author for author in compacted if _looks_like_author_name(author)]
     # Remove inter-character spaces in pure Chinese names
-    return [re.sub(r"\s+", "", a) if re.fullmatch(r"[\u4e00-\u9fff·\s]{2,16}", a) else a for a in result]
-
+    return [re.sub(r"\s+", "", a) if re.fullmatch(r"[一-鿿·\s]{2,16}", a) else a for a in result]
 
 def _split_author_candidate(candidate: str) -> list[str]:
     text = normalize_line(candidate)
@@ -586,6 +588,9 @@ def _split_author_candidate(candidate: str) -> list[str]:
                 continue
         if _looks_like_author_name(compact_part):
             cleaned_parts.append(compact_part)
+        elif re.fullmatch(r"[一-鿿]", compact_no_space):
+            # Keep single-char Chinese fragments for cross-line name merging
+            cleaned_parts.append(compact_no_space)
     return compact_list(cleaned_parts, 6)
 
 
