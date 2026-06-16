@@ -582,7 +582,9 @@ class KeywordExtractionTests(unittest.TestCase):
                         front_text="课程写作辅助中的文献解读研究\n张三\n摘要：摘要原文，本文关注课堂报告写作场景下的文献解读流程。\n关键词：课程写作",
                     )
 
-        self.assertEqual(result.fields_supplemented, ["authors"])
+        self.assertIn("authors", result.fields_supplemented)
+        self.assertIn("title", result.fields_supplemented)
+        self.assertEqual(result.title, "AI 补充标题")
         self.assertTrue(result.debug_info.get("used_llm"))
         self.assertEqual(result.debug_info.get("attempted_path"), ["responses"])
         self.assertIn("raw_response_text", result.debug_info)
