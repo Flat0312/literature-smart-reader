@@ -789,16 +789,7 @@ def _resolve_structured_result(structured_request, llm_debug_seed: dict[str, obj
         for candidate in structured_request.candidates.values()
         if candidate.text.strip()
     )
-
-    if explicit_abstract_labels_found or populated_rule_fields == 3:
-        structured_result = rewrite_structured_fields(structured_request)
-        llm_debug = {
-            "env": get_relay_env_status(),
-            **llm_debug_seed,
-            **structured_result.debug_info,
-            "backend": "local_rule_priority",
-        }
-        return structured_result, "当前结构化字段优先来自中文摘要原文标签或规则抽取。", llm_debug
+    rule_candidates_complete = explicit_abstract_labels_found or populated_rule_fields == 3
 
     try:
         structured_result = rewrite_structured_result(structured_request)
@@ -808,8 +799,10 @@ def _resolve_structured_result(structured_request, llm_debug_seed: dict[str, obj
         elif supplemented_fields:
             field_labels = "、".join(STRUCTURED_FIELD_LABELS.get(field_name, field_name) for field_name in supplemented_fields)
             structured_notice = f"以下空缺字段由模型概括补充：{field_labels}；其余字段保留原文规则抽取结果。"
+        elif rule_candidates_complete:
+            structured_notice = "当前结构化字段已由模型结合原文规则候选重写。"
         else:
-            structured_notice = "当前结构化字段优先保留原文规则抽取结果。"
+            structured_notice = "当前结构化字段由模型结合可用候选生成。"
         llm_debug = {
             "env": get_relay_env_status(),
             **llm_debug_seed,
