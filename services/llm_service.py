@@ -383,23 +383,6 @@ def recognize_metadata_with_llm(
         "raw_response_text": "",
     }
 
-    title_needs = not title or title == "未识别标题"
-    authors_needs = not authors or authors_confidence == "none"
-    keywords_needs = not keywords or keyword_source_kind == "frequency_fallback"
-    abstract_needs = not (abstract_zh or "").strip() and not (abstract_en or "").strip()
-
-    if not (title_needs or authors_needs or keywords_needs or abstract_needs):
-        debug_info["skip_reason"] = "all_fields_populated"
-        return MetadataRecognitionResult(
-            title=title,
-            authors=list(authors),
-            keywords=list(keywords),
-            abstract_zh=abstract_zh or "",
-            abstract_en=abstract_en or "",
-            note="所有元数据字段已由规则提取完成，无需 AI 识别。",
-            debug_info=debug_info,
-        )
-
     if len(normalize_whitespace(front_text or "")) < 40:
         debug_info["skip_reason"] = "front_text_too_short"
         return MetadataRecognitionResult(
@@ -436,7 +419,12 @@ def recognize_metadata_with_llm(
     responses_error: Exception | None = None
     try:
         debug_info["attempted_path"].append("responses")
-        payload, raw_output = _metadata_recognition_with_responses(client, settings, front_text=front_text)
+        payload, raw_output = _metadata_recognition_with_responses(
+            client, settings, front_text=front_text,
+            current_title=title, current_authors=list(authors),
+            current_keywords=list(keywords), current_abstract_zh=abstract_zh or "",
+            current_abstract_en=abstract_en or "",
+        )
         debug_info["raw_response_text"] = raw_output
         result = _merge_metadata_recognition(
             payload,
@@ -458,7 +446,12 @@ def recognize_metadata_with_llm(
 
     try:
         debug_info["attempted_path"].append("chat.completions")
-        payload, raw_output = _metadata_recognition_with_chat(client, settings, front_text=front_text)
+        payload, raw_output = _metadata_recognition_with_chat(
+            client, settings, front_text=front_text,
+            current_title=title, current_authors=list(authors),
+            current_keywords=list(keywords), current_abstract_zh=abstract_zh or "",
+            current_abstract_en=abstract_en or "",
+        )
         debug_info["raw_response_text"] = raw_output
         result = _merge_metadata_recognition(
             payload,
@@ -502,46 +495,73 @@ def _merge_metadata_recognition(
     current_abstract_en: str,
 ) -> MetadataRecognitionResult:
     supplemented: list[str] = []
+    corrected: list[str] = []
 
     llm_title = _sanitize_recognized_title(payload.title)
-    title_needs = not current_title or current_title == "未识别标题"
     final_title = current_title
-    if title_needs and llm_title:
-        final_title = llm_title
-        supplemented.append("title")
+    if llm_title:
+        if not current_title or current_title == "未识别标题":
+            final_title = llm_title
+            supplemented.append("title")
+        elif llm_title != current_title:
+            final_title = llm_title
+            corrected.append("title")
+    elif not current_title or current_title == "未识别标题":
+        final_title = ""
 
     llm_authors = _sanitize_author_payload(list(payload.authors))
-    authors_needs = not current_authors or current_authors_confidence == "none"
     final_authors = list(current_authors)
-    if authors_needs and llm_authors:
-        final_authors = llm_authors
-        supplemented.append("authors")
+    if llm_authors:
+        if not current_authors or current_authors_confidence == "none":
+            final_authors = llm_authors
+            supplemented.append("authors")
+        elif set(llm_authors) != set(current_authors):
+            final_authors = llm_authors
+            corrected.append("authors")
+    elif not current_authors or current_authors_confidence == "none":
+        final_authors = []
 
     llm_keywords = _sanitize_keyword_payload(list(payload.keywords))
-    keywords_needs = not current_keywords or current_keyword_source_kind == "frequency_fallback"
     final_keywords = list(current_keywords)
-    if keywords_needs and llm_keywords:
-        final_keywords = llm_keywords
-        supplemented.append("keywords")
+    if llm_keywords:
+        if not current_keywords or current_keyword_source_kind == "frequency_fallback":
+            final_keywords = llm_keywords
+            supplemented.append("keywords")
+        elif set(llm_keywords) != set(current_keywords):
+            final_keywords = llm_keywords
+            corrected.append("keywords")
+    elif not current_keywords or current_keyword_source_kind == "frequency_fallback":
+        final_keywords = []
 
     llm_abstract_zh = _sanitize_recognized_abstract(payload.abstract_zh)
     llm_abstract_en = _sanitize_recognized_abstract(payload.abstract_en)
     final_abstract_zh = current_abstract_zh
     final_abstract_en = current_abstract_en
-    if not current_abstract_zh and not current_abstract_en:
-        if llm_abstract_zh:
+    if llm_abstract_zh:
+        if not current_abstract_zh:
             final_abstract_zh = llm_abstract_zh
             supplemented.append("abstract_zh")
-        if llm_abstract_en:
+        elif llm_abstract_zh != current_abstract_zh:
+            final_abstract_zh = llm_abstract_zh
+            corrected.append("abstract_zh")
+    if llm_abstract_en:
+        if not current_abstract_en:
             final_abstract_en = llm_abstract_en
             supplemented.append("abstract_en")
+        elif llm_abstract_en != current_abstract_en:
+            final_abstract_en = llm_abstract_en
+            corrected.append("abstract_en")
 
     note = (payload.note or "").strip()
     if not note:
-        if supplemented:
-            note = f"AI 已补充识别：{'、'.join(supplemented)}。"
+        if supplemented and corrected:
+            note = f"AI 补充了{'、'.join(supplemented)}，纠正了{'、'.join(corrected)}。"
+        elif supplemented:
+            note = f"AI 补充识别了{'、'.join(supplemented)}。"
+        elif corrected:
+            note = f"AI 纠正了{'、'.join(corrected)}。"
         else:
-            note = "AI 识别未产生新内容，保留规则结果。"
+            note = "AI 验证通过，规则结果正确。"
 
     return MetadataRecognitionResult(
         title=final_title,
@@ -550,7 +570,7 @@ def _merge_metadata_recognition(
         abstract_zh=final_abstract_zh,
         abstract_en=final_abstract_en,
         note=note,
-        fields_supplemented=supplemented,
+        fields_supplemented=[*supplemented, *corrected],
         debug_info={},
     )
 
@@ -575,21 +595,36 @@ def _sanitize_recognized_abstract(abstract: str) -> str:
 
 def _build_metadata_recognition_system_prompt() -> str:
     return (
-        "你是学术论文元数据识别助手。请仅依据提供的论文首页前部文本，识别以下四个字段：标题、作者、关键词、摘要。"
+        "你是学术论文元数据识别助手。请依据提供的论文首页前部文本和当前已提取的规则结果，识别并验证以下字段：标题、作者、关键词、摘要。"
         "不要猜测，不要补充外部事实。"
-        "标题：只返回论文的正式标题，不含机构、期刊名等。无法识别时返回空字符串。"
-        "作者：只返回明确出现的作者姓名，不要包含机构、邮箱。无法识别时返回空数组。"
-        "关键词：返回论文中明确标注的关键词，3 到 8 个。无显式关键词时返回空数组，不要从摘要中推测。"
-        "摘要：返回中文摘要或英文摘要的原文，不要改写或概括。无摘要时返回空字符串。"
+        "标题：只返回论文的正式标题，不含机构、期刊名等。如果当前规则结果有误（如截断、含期刊名），请纠正；如果正确，保留原值。无法识别时返回空字符串。"
+        "作者：只返回明确出现的作者姓名，不要包含机构、邮箱、单位。如果当前规则结果混入了机构名或不完整，请纠正；如果正确，保留原值。无法识别时返回空数组。"
+        "关键词：返回论文中明确标注的关键词，3 到 8 个。如果当前规则结果有误（如含污染词、数量异常），请纠正；如果正确，保留原值。无显式关键词时返回空数组。"
+        "摘要：返回中文摘要或英文摘要的原文，不要改写或概括。如果当前规则结果有误，请纠正；如果正确，保留原值。无摘要时返回空字符串。"
         "输出 JSON 字段固定为 title、authors、keywords、abstract_zh、abstract_en、note。"
     )
 
 
-def _build_metadata_recognition_input(*, front_text: str) -> str:
-    return "\n".join([
-        "以下是论文首页前部文本，请从中识别标题、作者、关键词和摘要：",
-        front_text[:2000],
-    ])
+def _build_metadata_recognition_input(
+    *,
+    front_text: str,
+    current_title: str = "",
+    current_authors: list[str] | None = None,
+    current_keywords: list[str] | None = None,
+    current_abstract_zh: str = "",
+    current_abstract_en: str = "",
+) -> str:
+    lines = ["以下是论文首页前部文本和当前规则提取结果，请验证并纠正：", ""]
+    lines.append("【当前规则提取结果】")
+    lines.append(f"标题：{current_title or '（未识别）'}")
+    lines.append(f"作者：{'、'.join(current_authors) if current_authors else '（未识别）'}")
+    lines.append(f"关键词：{'、'.join(current_keywords) if current_keywords else '（未识别）'}")
+    lines.append(f"中文摘要：{current_abstract_zh[:200] or '（无）'}")
+    lines.append(f"英文摘要：{current_abstract_en[:200] or '（无）'}")
+    lines.append("")
+    lines.append("【论文首页前部文本】")
+    lines.append(front_text[:2000])
+    return "\n".join(lines)
 
 
 def _metadata_recognition_with_responses(
@@ -597,11 +632,23 @@ def _metadata_recognition_with_responses(
     settings: RelaySettings,
     *,
     front_text: str,
+    current_title: str = "",
+    current_authors: list[str] | None = None,
+    current_keywords: list[str] | None = None,
+    current_abstract_zh: str = "",
+    current_abstract_en: str = "",
 ) -> tuple[MetadataRecognitionPayload, str]:
     response = client.responses.parse(
         model=settings.model,
         instructions=_build_metadata_recognition_system_prompt(),
-        input=_build_metadata_recognition_input(front_text=front_text),
+        input=_build_metadata_recognition_input(
+            front_text=front_text,
+            current_title=current_title,
+            current_authors=current_authors,
+            current_keywords=current_keywords,
+            current_abstract_zh=current_abstract_zh,
+            current_abstract_en=current_abstract_en,
+        ),
         text_format=MetadataRecognitionPayload,
         temperature=0.1,
         max_output_tokens=400,
@@ -622,12 +669,24 @@ def _metadata_recognition_with_chat(
     settings: RelaySettings,
     *,
     front_text: str,
+    current_title: str = "",
+    current_authors: list[str] | None = None,
+    current_keywords: list[str] | None = None,
+    current_abstract_zh: str = "",
+    current_abstract_en: str = "",
 ) -> tuple[MetadataRecognitionPayload, str]:
     completion = client.chat.completions.create(
         model=settings.model,
         messages=[
             {"role": "system", "content": _build_metadata_recognition_system_prompt()},
-            {"role": "user", "content": _build_metadata_recognition_input(front_text=front_text)},
+            {"role": "user", "content": _build_metadata_recognition_input(
+                front_text=front_text,
+                current_title=current_title,
+                current_authors=current_authors,
+                current_keywords=current_keywords,
+                current_abstract_zh=current_abstract_zh,
+                current_abstract_en=current_abstract_en,
+            )},
         ],
         temperature=0.1,
         max_tokens=400,
